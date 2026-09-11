@@ -43,8 +43,9 @@ class EventBus:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.retention_s = retention_s
         self._lock = threading.Lock()
-        self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        self._conn = sqlite3.connect(self.db_path, check_same_thread=False, timeout=10)
         self._conn.execute("PRAGMA journal_mode=WAL;")
+        self._conn.execute("PRAGMA busy_timeout=10000;")
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
         self.gate = EventGate()
