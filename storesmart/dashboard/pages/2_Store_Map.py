@@ -42,24 +42,34 @@ if st.button("Save store map", type="primary"):
 
 st.subheader("3. Preview")
 COLORS = {"shelf": "#4C78A8", "door": "#54A24B", "counter": "#E45756", "camera": "#F2B701"}
-fig, ax = plt.subplots(figsize=(6, 6 * store_map.breadth_ft / max(store_map.length_ft, 1)))
-ax.set_xlim(0, store_map.length_ft)
-ax.set_ylim(0, store_map.breadth_ft)
-ax.set_aspect("equal")
-ax.invert_yaxis()
-for r in store_map.rectangles:
-    ax.add_patch(patches.Rectangle((r.x, r.y), r.w, r.h, facecolor=COLORS.get(r.type, "gray"), alpha=0.6, edgecolor="black"))
-    ax.text(r.x + r.w / 2, r.y + r.h / 2, r.label, ha="center", va="center", fontsize=8)
-
 bus = EventBus()
-positions = bus.recent(limit=200, event_type="position")
-if positions:
-    xs = [p["x_ft"] for p in positions]
-    ys = [p["y_ft"] for p in positions]
-    ax.scatter(xs, ys, c="black", s=15, zorder=5, label="anonymous dots")
-    ax.legend(loc="upper right")
-st.pyplot(fig)
-st.caption("Dots are anonymous foot positions from Phase 2's position events — no image is shown here.")
+
+
+@fragment(run_every=1.5)
+def render_preview():
+    fig, ax = plt.subplots(figsize=(6, 6 * store_map.breadth_ft / max(store_map.length_ft, 1)))
+    ax.set_xlim(0, store_map.length_ft)
+    ax.set_ylim(0, store_map.breadth_ft)
+    ax.set_aspect("equal")
+    ax.invert_yaxis()
+    for r in store_map.rectangles:
+        ax.add_patch(patches.Rectangle((r.x, r.y), r.w, r.h, facecolor=COLORS.get(r.type, "gray"), alpha=0.6, edgecolor="black"))
+        ax.text(r.x + r.w / 2, r.y + r.h / 2, r.label, ha="center", va="center", fontsize=8)
+
+    positions = bus.recent(limit=200, event_type="position")
+    if positions:
+        xs = [p["x_ft"] for p in positions]
+        ys = [p["y_ft"] for p in positions]
+        ax.scatter(xs, ys, c="black", s=15, zorder=5, label="anonymous dots")
+        ax.legend(loc="upper right")
+    st.pyplot(fig)
+    # Re-rendering every 1.5s means a new figure every 1.5s; pyplot keeps them
+    # all alive until the tab closes, so drop this one now.
+    plt.close(fig)
+    st.caption("Dots are anonymous foot positions from Phase 2's position events — no image is shown here.")
+
+
+render_preview()
 
 st.subheader("4. Calibrate the floor camera (4-point homography)")
 st.caption(
@@ -87,3 +97,5 @@ if st.button("Compute homography"):
         st.success("Homography computed and saved.")
     except Exception as exc:
         st.error(f"Calibration failed: {exc}")
+
+autorefresh(1.5)
