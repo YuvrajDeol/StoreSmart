@@ -39,6 +39,7 @@ trap cleanup EXIT INT TERM
 
 start footfall "$PY" -m storesmart.phase1_footfall.run $SIM_FLAG --headless
 [[ -f storesmart/phase3_shelf/run.py ]] && start shelf "$PY" -m storesmart.phase3_shelf.run $SIM_FLAG --headless
+[[ -f storesmart/phase2_map/live_map.py ]] && start floor "$PY" -m storesmart.phase2_map.live_map $SIM_FLAG --headless
 [[ -f storesmart/phase4_dwell/run.py ]] && start dwell "$PY" -m storesmart.phase4_dwell.run $SIM_FLAG --headless
 
 echo ""
