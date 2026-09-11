@@ -70,7 +70,7 @@ class EventBus:
                 (time.time(), payload.get("cam"), payload["type"], json.dumps(payload)),
             )
             self._conn.commit()
-        if event.model_fields.get("type") and payload["type"] == "position":
+        if payload["type"] == "position":
             self._prune_positions()
         return True
 
