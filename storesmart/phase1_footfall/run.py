@@ -357,6 +357,11 @@ def main():
                 qa.set_counters(qa.counters - 1)
             elif k == ord("f") and isinstance(counter, EntryExitCounter):
                 counter.flip_direction()
+        elif simulate:
+            # Windowed mode is paced by cv2.waitKey; headless simulate has no
+            # such pause, so without this the loop spins the CPU flat out and
+            # runs simulated time ~100x too fast.
+            time.sleep(max(0.0, dt_sim - (time.time() - tnow)))
 
         if args.duration and now >= args.duration:
             break

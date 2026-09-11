@@ -9,10 +9,13 @@ import streamlit as st
 from storesmart.common.bus import EventBus
 from storesmart.dashboard.refresh import autorefresh, fragment
 from storesmart.phase2_map.calibrate import calibrate
+from storesmart.dashboard.theme import PLOT_BG, PLOT_FG, apply_theme, page_header, style_axes
 from storesmart.phase2_map.map_model import RECT_TYPES, Rectangle, StoreMap, load_map, save_map
 
 st.set_page_config(page_title="StoreSmart — Store Map", page_icon="🗺️", layout="wide")
-st.title("Store Map")
+apply_theme()
+page_header("🗺️ Store Map",
+            "Draw the shop layout, calibrate the floor camera, and watch anonymous dots live")
 
 if "store_map" not in st.session_state:
     st.session_state.store_map = load_map()
@@ -47,17 +50,19 @@ ax.set_xlim(0, store_map.length_ft)
 ax.set_ylim(0, store_map.breadth_ft)
 ax.set_aspect("equal")
 ax.invert_yaxis()
+style_axes(fig, ax)
 for r in store_map.rectangles:
     ax.add_patch(patches.Rectangle((r.x, r.y), r.w, r.h, facecolor=COLORS.get(r.type, "gray"), alpha=0.6, edgecolor="black"))
-    ax.text(r.x + r.w / 2, r.y + r.h / 2, r.label, ha="center", va="center", fontsize=8)
+    ax.text(r.x + r.w / 2, r.y + r.h / 2, r.label, ha="center", va="center", fontsize=8, color=PLOT_FG)
 
 bus = EventBus()
 positions = bus.recent(limit=200, event_type="position")
 if positions:
     xs = [p["x_ft"] for p in positions]
     ys = [p["y_ft"] for p in positions]
-    ax.scatter(xs, ys, c="black", s=15, zorder=5, label="anonymous dots")
-    ax.legend(loc="upper right")
+    ax.scatter(xs, ys, c="#3DDC97", s=22, zorder=5, label="anonymous dots")
+    ax.legend(loc="upper right", facecolor=PLOT_BG, edgecolor="#262C3A",
+              labelcolor=PLOT_FG, fontsize=8)
 st.pyplot(fig)
 st.caption("Dots are anonymous foot positions from Phase 2's position events — no image is shown here.")
 
