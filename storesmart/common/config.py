@@ -43,3 +43,18 @@ def load_cameras(path: Path | str | None = None) -> dict[str, dict]:
 def load_settings(path: Path | str | None = None) -> dict:
     path = path or (CONFIG_DIR / "settings.yaml")
     return load_yaml(path)
+
+
+def save_cameras_local(cameras: dict[str, dict]) -> Path:
+    """Write camera sources to config/cameras.local.yaml, which is gitignored
+    so real phone IPs never reach the repository."""
+    path = CONFIG_DIR / "cameras.local.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    header = (
+        "# Local camera sources — gitignored, never commit real IPs.\n"
+        "# Written by the dashboard's Control page; edit by hand if you prefer.\n"
+    )
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(header)
+        yaml.safe_dump({"cameras": cameras}, fh, sort_keys=False)
+    return path

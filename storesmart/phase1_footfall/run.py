@@ -33,6 +33,17 @@ def _scale(pts_norm, w, h):
     return [[x * w, y * h] for x, y in pts_norm]
 
 
+def _ask(prompt: str, default: str = "") -> str:
+    """input() that survives having no stdin — when the module is launched
+    from the dashboard rather than a terminal, fall back to the default
+    instead of crashing on EOF."""
+    try:
+        return input(prompt).strip() or default
+    except (EOFError, OSError):
+        print(f"{prompt}{default}  (no terminal attached, using default)")
+        return default
+
+
 def _txt(img, s, org, scale=0.55, color=(235, 235, 235), thick=1):
     cv2.putText(img, s, (org[0] + 1, org[1] + 1), cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), thick + 1, cv2.LINE_AA)
     cv2.putText(img, s, org, cv2.FONT_HERSHEY_SIMPLEX, scale, color, thick, cv2.LINE_AA)
@@ -73,8 +84,8 @@ def run_doorway_setup(get_frame) -> dict | None:
     w, h = size
     rect_norm = {"x": x1 / w, "y": y1 / h, "w": (x2 - x1) / w, "h": (y2 - y1) / h}
 
-    in_label = input("Label for INSIDE the rectangle [Inside]: ").strip() or "Inside"
-    out_label = input("Label for OUTSIDE the rectangle [Outside]: ").strip() or "Outside"
+    in_label = _ask("Label for INSIDE the rectangle [Inside]: ", "Inside")
+    out_label = _ask("Label for OUTSIDE the rectangle [Outside]: ", "Outside")
     return {"rect": rect_norm, "in_label": in_label, "out_label": out_label}
 
 
@@ -126,8 +137,8 @@ def run_line_setup(get_frame) -> dict | None:
     w, h = size
     line_norm = [[x / w, y / h] for x, y in line_px]
 
-    in_label = input("Label for INSIDE the store [Inside]: ").strip() or "Inside"
-    out_label = input("Label for OUTSIDE the store [Outside]: ").strip() or "Outside"
+    in_label = _ask("Label for INSIDE the store [Inside]: ", "Inside")
+    out_label = _ask("Label for OUTSIDE the store [Outside]: ", "Outside")
     return {"line": line_norm, "in_from": in_from, "in_label": in_label, "out_label": out_label}
 
 
@@ -209,7 +220,7 @@ def main():
         if args.headless or simulate:
             initial_inside = 0
         else:
-            raw = input("How many people are already inside the store right now? [0]: ").strip()
+            raw = _ask("How many people are already inside the store right now? [0]: ", "0")
             try:
                 initial_inside = int(raw) if raw else 0
             except ValueError:

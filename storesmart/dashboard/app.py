@@ -162,6 +162,7 @@ render()
 with st.sidebar:
     st.markdown("### Pages")
     st.markdown(
+        "- **Control** — start/stop phases, simulate vs live\n"
         "- **Live** — footfall, queue, alerts\n"
         "- **Store Map** — layout & calibration\n"
         "- **Shelves & Stock** — slots, forecasts\n"
@@ -169,6 +170,7 @@ with st.sidebar:
         "- **Dwell & Insights** — heatmap, layout tips\n"
         "- **Privacy** — event gate & audit"
     )
-    st.caption("Start the modules with `make sim` (synthetic) or `make demo` (real phones).")
+    st.caption("Use **Control** to start each phase on synthetic data or a real camera — "
+               "no terminal needed.")
 
 autorefresh(2.0)
