@@ -136,16 +136,48 @@ def tail_log(name: str, lines: int = 20) -> str:
         return "(no log yet)"
 
 
+#: macOS denies camera access per *responsible* process. A module launched by
+#: a dashboard that itself has no camera grant inherits that denial, and
+#: OpenCV reports it only on stderr — so we look for it there.
+_UNAUTHORIZED = "not authorized to capture video"
+
+
+def _run_probe(args: list[str], timeout_s: float) -> tuple[dict, str]:
+    out = subprocess.run(
+        [sys.executable, "-m", "storesmart.common.camera_check", *args],
+        cwd=REPO_ROOT, capture_output=True, text=True, timeout=timeout_s + 15,
+    )
+    stderr = out.stderr or ""
+    lines = [ln for ln in (out.stdout or "").strip().splitlines() if ln.startswith("{")]
+    payload = json.loads(lines[-1]) if lines else {}
+    return payload, stderr
+
+
 def probe_camera(source: str, timeout_s: float = 8.0) -> dict:
     """Shell out to the camera probe so the dashboard process never opens a
     camera itself."""
     try:
-        out = subprocess.run(
-            [sys.executable, "-m", "storesmart.common.camera_check", source,
-             "--timeout", str(timeout_s)],
-            cwd=REPO_ROOT, capture_output=True, text=True, timeout=timeout_s + 10,
-        )
-        line = (out.stdout or "").strip().splitlines()
-        return json.loads(line[-1]) if line else {"ok": False, "detail": out.stderr.strip()[:300] or "no output"}
+        payload, stderr = _run_probe([source, "--timeout", str(timeout_s)], timeout_s)
+        if not payload:
+            return {"ok": False, "detail": stderr.strip()[:300] or "probe produced no output"}
+        if not payload.get("ok") and _UNAUTHORIZED in stderr:
+            payload["detail"] = (
+                "macOS denied camera access to this process. Quit this dashboard and "
+                "start it from your own Terminal, then approve the camera prompt."
+            )
+            payload["unauthorized"] = True
+        return payload
     except Exception as exc:
         return {"ok": False, "detail": f"probe failed: {exc}"}
+
+
+def list_cameras(timeout_s: float = 30.0) -> dict:
+    """Names of capture devices macOS can currently see, plus which OpenCV
+    indices actually open."""
+    try:
+        payload, stderr = _run_probe(["--list"], timeout_s)
+        payload = payload or {"names": [], "open_indices": []}
+        payload["unauthorized"] = _UNAUTHORIZED in stderr
+        return payload
+    except Exception as exc:
+        return {"names": [], "open_indices": [], "error": str(exc)}

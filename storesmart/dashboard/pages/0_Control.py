@@ -74,6 +74,50 @@ if col2.button("⏹ Stop all", use_container_width=True):
 col3.caption("Simulate needs no camera and is the safe stage fallback. "
              "Live uses whatever source you set below for that camera role.")
 
+# --------------------------------------------------------- camera detection
+with st.expander("🎥 Which cameras can this Mac see right now?"):
+    st.caption(
+        "Checks what macOS reports as connected, and which OpenCV indices actually "
+        "open. Worth running before switching anything to Live."
+    )
+    if st.button("Detect cameras"):
+        with st.spinner("Asking macOS…"):
+            found = processes.list_cameras()
+        st.session_state["camera_scan"] = found
+
+    found = st.session_state.get("camera_scan")
+    if found:
+        names = found.get("names", [])
+        indices = found.get("open_indices", [])
+        c1, c2 = st.columns(2)
+        c1.markdown("**macOS sees:**")
+        c1.write(names or "_nothing_")
+        c2.markdown("**Indices that open:**")
+        c2.write(indices or "_none_")
+
+        if found.get("unauthorized"):
+            st.error(
+                "**macOS is denying camera access to this dashboard's processes.** "
+                "That blocks every camera, iPhone or not.\n\n"
+                "Fix: stop this dashboard and start it from your own Terminal "
+                "(which already has camera permission), then approve any prompt:\n\n"
+                "```bash\n.venv/bin/python -m streamlit run storesmart/dashboard/app.py\n```"
+            )
+        elif not any("iphone" in n.lower() for n in names):
+            st.warning(
+                "**No iPhone listed.** Continuity Camera only appears once macOS has an "
+                "active session with the phone — the dashboard cannot wake it by itself.\n\n"
+                "To wake it: unlock the iPhone, keep it near the Mac, turn **Personal Hotspot "
+                "off**, and open **FaceTime** (or Photo Booth) and select the iPhone as the "
+                "camera. Leave that app open, then press Detect again — the phone should "
+                "appear here and become usable as an index.\n\n"
+                "More reliable for a demo: run an IP-camera app on the phone and use its "
+                "`http://<phone-ip>:8080/video` URL as the source instead — that needs no "
+                "Continuity session at all."
+            )
+        else:
+            st.success("An iPhone is visible — use whichever index above corresponds to it.")
+
 st.divider()
 
 cameras = load_cameras()
@@ -126,6 +170,13 @@ for module in MODULES:
                     scol2.success(f"✅ {result.get('detail')}{size}")
                 else:
                     scol2.error(f"❌ {result.get('detail')}")
+                    if source.isdigit() and not result.get("unauthorized"):
+                        scol2.caption(
+                            "If this is meant to be an iPhone via Continuity Camera: the "
+                            "dashboard can't wake it. Open FaceTime and select the iPhone "
+                            "first, or use the phone's `http://…:8080/video` URL instead. "
+                            "Use **Detect cameras** above to see what macOS has."
+                        )
 
             if source != current:
                 if scol2.button("💾 Save this source", key=f"save_{key}"):

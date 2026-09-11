@@ -61,12 +61,61 @@ def probe(source: str, timeout_s: float = 8.0) -> dict:
         capture.release()
 
 
+def list_cameras(max_index: int = 4) -> dict:
+    """What capture devices exist right now.
+
+    On macOS, `system_profiler` gives the device *names*, which is the only
+    way to tell a Continuity Camera iPhone apart from the built-in webcam —
+    OpenCV exposes indices with no names at all. An iPhone that is asleep or
+    has no active Continuity session simply won't be listed, which is the
+    usual reason live mode "can't find" it.
+    """
+    import platform
+    import subprocess
+
+    names: list[str] = []
+    if platform.system() == "Darwin":
+        try:
+            out = subprocess.run(["system_profiler", "SPCameraDataType", "-json"],
+                                 capture_output=True, text=True, timeout=25)
+            for entry in json.loads(out.stdout or "{}").get("SPCameraDataType", []):
+                name = entry.get("_name")
+                if name:
+                    names.append(name)
+        except Exception:
+            pass
+
+    import cv2
+
+    working: list[int] = []
+    for index in range(max_index):
+        capture = cv2.VideoCapture(index)
+        try:
+            if capture.isOpened():
+                ok, frame = capture.read()
+                if ok and frame is not None:
+                    working.append(index)
+        except Exception:
+            pass
+        finally:
+            capture.release()
+
+    return {"names": names, "open_indices": working}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("source", help="'simulate', a webcam index, a stream/snapshot URL, or a file")
+    parser.add_argument("source", nargs="?", default=None,
+                        help="'simulate', a webcam index, a stream/snapshot URL, or a file")
+    parser.add_argument("--list", action="store_true", help="list available cameras instead of probing")
     parser.add_argument("--timeout", type=float, default=8.0)
     args = parser.parse_args()
-    print(json.dumps(probe(args.source, args.timeout)))
+    if args.list:
+        print(json.dumps(list_cameras()))
+    elif args.source:
+        print(json.dumps(probe(args.source, args.timeout)))
+    else:
+        parser.error("give a source to probe, or --list")
 
 
 if __name__ == "__main__":
