@@ -56,6 +56,19 @@ def test_doorway_counter_initial_inside_baseline(tmp_path):
     assert counter.inside == 2  # back to baseline, never dipped negative/stuck
 
 
+def test_doorway_counter_bridges_id_swap_without_phantom_crossing(tmp_path):
+    bus = make_bus(tmp_path)
+    counter = DoorwayCounter(rect=RECT, lost_after=0.5)
+    counter.update([(1, (130, 50, 150, 70))], now=0.0, bus=bus)   # confirmed inside the rect
+    counter.update([], now=1.0, bus=bus)                          # track lost (occluded)
+    counter.update([(2, (132, 50, 152, 70))], now=1.2, bus=bus)   # new ID, same spot -> relinked
+    assert counter.entries == 0
+    assert counter.exits == 0
+    counter.update([(2, (0, 50, 20, 70))], now=2.0, bus=bus)      # now genuinely leaves
+    assert counter.exits == 1
+    assert counter.entries == 0
+
+
 def test_stale_track_is_forgotten(tmp_path):
     bus = make_bus(tmp_path)
     counter = DoorwayCounter(rect=RECT, lost_after=1.0)

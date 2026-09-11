@@ -72,6 +72,32 @@ def test_entry_exit_counter_wide_box_counts_as_two_people(tmp_path):
     assert counter.entries == 7  # 5 (singles) + 2 (merged pair)
 
 
+def test_entry_exit_counter_bridges_id_swap_without_phantom_crossing(tmp_path):
+    """Regression test for the reported bug: ByteTrack drops a track ID
+    during a brief occlusion right at the doorway and reassigns a new ID to
+    the same physical person. Without relinking, the new ID's first sighting
+    (already confirmed on one side) would look like a fresh person and the
+    very next frame's tiny position update could look like a "crossing" —
+    inflating the count with a phantom person who never actually walked
+    through the line."""
+    bus = make_bus(tmp_path)
+    counter = EntryExitCounter(line=[[100, 0], [100, 200]], in_from=-1, buffer_px=10, lost_after=0.5)
+    # track 1: confirmed on the right (outside) side, then lost (occluded)
+    counter.update([(1, (150, 90, 170, 110))], now=0.0, bus=bus)
+    # track 1 goes stale (not seen for > lost_after) — simulate by advancing
+    # time with no detections at all
+    counter.update([], now=1.0, bus=bus)
+    # a new track ID appears a moment later, at essentially the same spot —
+    # this must be recognized as the same person, not a fresh sighting
+    counter.update([(2, (152, 90, 172, 110))], now=1.2, bus=bus)
+    assert counter.entries == 0
+    assert counter.exits == 0
+    # now that (relinked) person actually crosses to the inside
+    counter.update([(2, (30, 90, 50, 110))], now=2.0, bus=bus)
+    assert counter.entries == 1
+    assert counter.exits == 0
+
+
 def test_queue_alert_uses_hysteresis(tmp_path):
     bus = make_bus(tmp_path)
     queue_poly = [[0, 0], [100, 0], [100, 100], [0, 100]]

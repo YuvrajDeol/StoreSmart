@@ -23,6 +23,11 @@ single-person width and counts a wide box as more than one person.
 were already in the store when the system started, so someone leaving who
 was never seen entering doesn't quietly send the inside count negative
 (clamped) or leave it stuck at 0 while OUT keeps climbing.
+
+A track that ByteTrack drops and reassigns during a brief occlusion (common
+right at a doorway, where people cluster) would otherwise look like a
+brand-new person on first sighting — TrackRelinker bridges that gap using
+only position and time, so it doesn't fabricate a phantom crossing.
 """
 from __future__ import annotations
 
@@ -30,6 +35,7 @@ from storesmart.common.bus import EventBus
 from storesmart.common.config import load_json, save_json
 from storesmart.common.geometry import signed_distance
 from storesmart.phase1_footfall.group_size import GroupSizeEstimator
+from storesmart.phase1_footfall.track_relink import TrackRelinker
 
 DEFAULT_PATH = "config/line.json"
 EXAMPLE_PATH = "config/line.example.json"
@@ -39,7 +45,8 @@ class EntryExitCounter:
     def __init__(self, line: list[list[float]], in_from: int = 1, buffer_px: float = 40,
                  lost_after: float = 1.5, cam: str = "entrance",
                  in_label: str = "Inside", out_label: str = "Outside",
-                 initial_inside: int = 0, max_group_size: int = 4):
+                 initial_inside: int = 0, max_group_size: int = 4,
+                 relink_window_s: float = 3.0, relink_max_px: float = 80):
         self.line = line
         self.in_from = in_from
         self.buffer_px = buffer_px
@@ -50,9 +57,11 @@ class EntryExitCounter:
         self.initial_inside = initial_inside
         self.confirmed_side: dict[int, int] = {}
         self.last_seen: dict[int, float] = {}
+        self.last_position: dict[int, tuple[float, float]] = {}
         self.entries = 0
         self.exits = 0
         self._group_estimator = GroupSizeEstimator(max_group_size=max_group_size)
+        self._relinker = TrackRelinker(window_s=relink_window_s, max_px=relink_max_px)
 
     def flip_direction(self) -> None:
         self.in_from = -self.in_from
@@ -62,11 +71,14 @@ class EntryExitCounter:
         for tid, (x1, y1, x2, y2) in tracks:
             foot = ((x1 + x2) / 2, y2)
             self.last_seen[tid] = now
+            self.last_position[tid] = foot
             d = signed_distance(self.line, foot)
             if abs(d) < self.buffer_px:
                 continue  # inside the buffer band — not clearly on either side yet
             s = 1 if d > 0 else -1
             prev = self.confirmed_side.get(tid)
+            if prev is None:
+                prev = self._relinker.try_relink(foot, now)
             if prev is not None and prev != s:
                 group_size = self._group_estimator.estimate(x2 - x1)
                 if prev == self.in_from:
@@ -80,8 +92,14 @@ class EntryExitCounter:
             self.confirmed_side[tid] = s
         stale = [t for t, ts in self.last_seen.items() if now - ts > self.lost_after]
         for tid in stale:
+            side = self.confirmed_side.get(tid)
+            pos = self.last_position.get(tid)
+            if side is not None and pos is not None:
+                self._relinker.remember(side, pos, now)
             self.last_seen.pop(tid, None)
             self.confirmed_side.pop(tid, None)
+            self.last_position.pop(tid, None)
+        self._relinker.prune(now)
 
     @property
     def inside(self) -> int:
