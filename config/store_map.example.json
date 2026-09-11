@@ -1,0 +1,12 @@
+{
+  "shop_ft": {"length": 30, "breadth": 20},
+  "rectangles": [
+    {"type": "shelf", "label": "Snacks", "x": 4, "y": 2, "w": 6, "h": 3},
+    {"type": "shelf", "label": "Dairy", "x": 4, "y": 8, "w": 6, "h": 3},
+    {"type": "shelf", "label": "Grocery", "x": 14, "y": 2, "w": 6, "h": 3},
+    {"type": "door", "label": "Entrance", "x": 0, "y": 9, "w": 1, "h": 2},
+    {"type": "counter", "label": "Counter 1", "x": 24, "y": 9, "w": 3, "h": 2},
+    {"type": "camera", "label": "Floor Cam", "x": 15, "y": 0.5, "w": 1, "h": 1}
+  ],
+  "homography": null
+}

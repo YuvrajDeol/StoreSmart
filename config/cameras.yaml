@@ -1,0 +1,27 @@
+# Camera roles and sources for the StoreSmart demo.
+#
+# url can be:
+#   - a phone stream/snapshot URL, e.g.
+#       IP Webcam (Android): http://<phone-ip>:8080/video   (stream)
+#                             http://<phone-ip>:8080/shot.jpg (snapshot)
+#       DroidCam:             http://<phone-ip>:4747/video
+#   - a webcam index as a string, e.g. "0"
+#   - a path to a local video file
+#   - the literal string "simulate" (no camera needed)
+#
+# Real phone IPs should go in config/cameras.local.yaml (gitignored) instead
+# of here, so demo IPs never end up in git history.
+cameras:
+  entrance:
+    role: entrance
+    url: simulate
+  counter:
+    role: counter
+    url: simulate
+  floor:
+    role: floor
+    url: simulate
+  shelf:
+    role: shelf
+    url: simulate
+    snapshot_interval_s: 3
