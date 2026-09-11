@@ -171,6 +171,15 @@ def probe_camera(source: str, timeout_s: float = 8.0) -> dict:
         return {"ok": False, "detail": f"probe failed: {exc}"}
 
 
+def scan_network(timeout_s: float = 90.0) -> dict:
+    """Find phone camera servers on the local subnet (see camera_check)."""
+    try:
+        payload, stderr = _run_probe(["--scan"], timeout_s)
+        return payload or {"found": [], "error": stderr.strip()[:300]}
+    except Exception as exc:
+        return {"found": [], "error": str(exc)}
+
+
 def list_cameras(timeout_s: float = 30.0) -> dict:
     """Names of capture devices macOS can currently see, plus which OpenCV
     indices actually open."""

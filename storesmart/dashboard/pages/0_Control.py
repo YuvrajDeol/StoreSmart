@@ -74,6 +74,43 @@ if col2.button("⏹ Stop all", use_container_width=True):
 col3.caption("Simulate needs no camera and is the safe stage fallback. "
              "Live uses whatever source you set below for that camera role.")
 
+# ------------------------------------------------------ phone camera finder
+with st.expander("📶 Find phone cameras on the network"):
+    st.caption(
+        "Scans this machine's subnet for the ports phone IP-camera apps serve on "
+        "(IP Webcam, IP Camera Lite, DroidCam…). Use it when you don't know the "
+        "phone's address, or to confirm its server is actually running."
+    )
+    if st.button("Scan network"):
+        with st.spinner("Scanning the local subnet…"):
+            st.session_state["net_scan"] = processes.scan_network()
+
+    scan = st.session_state.get("net_scan")
+    if scan:
+        st.caption(f"Scanned {scan.get('scanned', '?')} · this machine is {scan.get('local_ip', '?')}")
+        found = scan.get("found", [])
+        if found:
+            st.success(f"Found {len(found)} camera-like service(s):")
+            for entry in found:
+                base = f"{entry['scheme']}://{entry['host']}:{entry['port']}"
+                st.code(base, language="text")
+            st.caption(
+                "These are open ports, not verified streams — add the app's own path "
+                "(often `/video`, `/live` or `/shot.jpg`), paste it into the source box "
+                "below, and press **Test source**."
+            )
+        else:
+            st.warning(
+                "**No camera servers found.** The phone app's server almost certainly "
+                "isn't running.\n\n"
+                "On the phone: open the IP-camera app, tap **Turn on IP Camera Server**, "
+                "and **keep the app in the foreground with the screen on** — iOS suspends "
+                "backgrounded apps, which kills the stream. Then scan again.\n\n"
+                "Also check both devices are on the same network. If the phone provides "
+                "the hotspot, use its hotspot address (usually `172.20.10.1`), not the "
+                "cellular IP the app may display."
+            )
+
 # --------------------------------------------------------- camera detection
 with st.expander("🎥 Which cameras can this Mac see right now?"):
     st.caption(
