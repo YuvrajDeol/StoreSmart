@@ -192,6 +192,9 @@ def main():
                           "entering it counts as IN, leaving it counts as OUT.")
     ap.add_argument("--doorway-config", default=None, help="override path to the doorway rectangle config")
     ap.add_argument("--line-config", default=None, help="override path to the entry line config")
+    ap.add_argument("--initial-inside", type=int, default=None,
+                     help="how many people are already inside the store at startup "
+                          "(skips the interactive prompt; useful for --headless/--simulate runs)")
     args = ap.parse_args()
 
     settings = load_settings().get("footfall", {})
@@ -200,6 +203,18 @@ def main():
     simulate = args.simulate or cameras.get("entrance", {}).get("url", "simulate") == "simulate"
     doorway_path = args.doorway_config or "config/doorway.json"
     line_path = args.line_config or "config/line.json"
+
+    initial_inside = args.initial_inside
+    if initial_inside is None:
+        if args.headless or simulate:
+            initial_inside = 0
+        else:
+            raw = input("How many people are already inside the store right now? [0]: ").strip()
+            try:
+                initial_inside = int(raw) if raw else 0
+            except ValueError:
+                print("Not a number, assuming 0.")
+                initial_inside = 0
 
     if not args.headless:
         cv2.namedWindow(WIN, cv2.WINDOW_NORMAL)
@@ -251,22 +266,26 @@ def main():
                     return
                 save_line_config(line_cfg, line_path)
 
+    max_group_size = settings.get("max_group_size", 4)
     if args.counting_mode == "doorway":
         counter = DoorwayCounter(
             rect=scale_rect(doorway_cfg["rect"], w, h),
             in_label=doorway_cfg.get("in_label", "Inside"), out_label=doorway_cfg.get("out_label", "Outside"),
             lost_after=settings.get("lost_after_s", 1.5),
+            initial_inside=initial_inside, max_group_size=max_group_size,
         )
     elif line_cfg is not None:
         counter = EntryExitCounter(
             line=_scale(line_cfg["line"], w, h), in_from=line_cfg["in_from"],
             buffer_px=settings.get("buffer_px", 40), lost_after=settings.get("lost_after_s", 1.5),
             in_label=line_cfg.get("in_label", "Inside"), out_label=line_cfg.get("out_label", "Outside"),
+            initial_inside=initial_inside, max_group_size=max_group_size,
         )
     else:
         counter = EntryExitCounter(
             line=_scale(geom["line"], w, h), in_from=geom["in_from"],
             buffer_px=settings.get("buffer_px", 40), lost_after=settings.get("lost_after_s", 1.5),
+            initial_inside=initial_inside, max_group_size=max_group_size,
         )
     qa = QueueAnalyzer(
         queue_poly=_scale(geom["queue"], w, h) if geom.get("queue") else None,

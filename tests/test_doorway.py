@@ -46,6 +46,16 @@ def test_track_staying_inside_does_not_double_count(tmp_path):
     assert counter.entries == 1
 
 
+def test_doorway_counter_initial_inside_baseline(tmp_path):
+    bus = make_bus(tmp_path)
+    counter = DoorwayCounter(rect=RECT, initial_inside=2)
+    assert counter.inside == 2
+    counter.update([(1, (0, 50, 20, 70))], now=0.0, bus=bus)     # outside
+    counter.update([(1, (130, 50, 150, 70))], now=1.0, bus=bus)  # enters -> +1
+    counter.update([(1, (0, 50, 20, 70))], now=2.0, bus=bus)     # leaves -> -1
+    assert counter.inside == 2  # back to baseline, never dipped negative/stuck
+
+
 def test_stale_track_is_forgotten(tmp_path):
     bus = make_bus(tmp_path)
     counter = DoorwayCounter(rect=RECT, lost_after=1.0)
