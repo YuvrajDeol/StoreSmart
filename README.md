@@ -53,7 +53,9 @@ isn't blocking incoming connections from the phone's IP.
 
 ## The four phases
 
-1. **Footfall & queue** — line-crossing entry/exit counting, queue length,
+1. **Footfall & queue** — entry/exit counting (either line-crossing, or a
+   click-to-draw doorway rectangle where entering it counts as IN and
+   leaving it counts as OUT — see `--counting-mode doorway`), queue length,
    service time, wait forecast (from shoppers already inside), and an
    open-another-counter recommendation with hysteresis.
 2. **Store map** — draw shelves/doors/counters/cameras on a to-scale map;

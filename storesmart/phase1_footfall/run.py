@@ -3,9 +3,10 @@
 
 Usage:
   python -m storesmart.phase1_footfall.run --simulate
-  python -m storesmart.phase1_footfall.run --cam entrance --counter-cam counter
+  python -m storesmart.phase1_footfall.run                        # line-crossing counter (default)
+  python -m storesmart.phase1_footfall.run --counting-mode doorway  # rectangle-based doorway counter
 
-Keys (windowed mode): q quit | v change view | + / - open counters | f flip IN direction
+Keys (windowed mode): q quit | v change view | + / - open counters | f flip IN direction (line mode only)
 """
 from __future__ import annotations
 
@@ -20,6 +21,7 @@ from storesmart.common.config import load_cameras, load_settings
 from storesmart.common.privacy import VIEWS, render_blurred, render_raw, render_zero_frame
 from storesmart.common.video import open_source
 from storesmart.phase1_footfall.counter import EntryExitCounter
+from storesmart.phase1_footfall.doorway import DoorwayCounter, load_doorway, save_doorway, scale_rect
 from storesmart.phase1_footfall.queue import QueueAnalyzer
 from storesmart.sim.people_sim import PeopleSimulator
 
@@ -30,7 +32,61 @@ def _scale(pts_norm, w, h):
     return [[x * w, y * h] for x, y in pts_norm]
 
 
-def draw_panel(h: int, counter: EntryExitCounter, qa: QueueAnalyzer, fps: float, bus: EventBus) -> np.ndarray:
+def _txt(img, s, org, scale=0.55, color=(235, 235, 235), thick=1):
+    cv2.putText(img, s, (org[0] + 1, org[1] + 1), cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), thick + 1, cv2.LINE_AA)
+    cv2.putText(img, s, org, cv2.FONT_HERSHEY_SIMPLEX, scale, color, thick, cv2.LINE_AA)
+
+
+def run_doorway_setup(get_frame) -> dict | None:
+    """Click the top-left then bottom-right corner of the doorway rectangle
+    on the (raw, setup-only) camera view. Labels are typed in the terminal
+    afterwards. Returns a normalized {rect, in_label, out_label} dict, or
+    None if cancelled with ESC."""
+    pts: list[tuple[int, int]] = []
+    cv2.setMouseCallback(WIN, lambda e, x, y, *_: pts.append((x, y)) if e == cv2.EVENT_LBUTTONDOWN else None)
+    size = None
+    while len(pts) < 2:
+        frame = get_frame()
+        if frame is None:
+            if cv2.waitKey(30) & 0xFF == 27:
+                return None
+            continue
+        size = (frame.shape[1], frame.shape[0])
+        img = frame.copy()
+        for p in pts:
+            cv2.circle(img, p, 6, (0, 0, 255), -1)
+        if len(pts) == 1:
+            cv2.circle(img, pts[0], 6, (0, 0, 255), -1)
+        _txt(img, "SETUP - click the doorway rectangle's top-left corner, then bottom-right",
+             (10, 28), 0.55, (0, 255, 255), 2)
+        _txt(img, "ESC = cancel   (raw view, setup only, nothing is saved)", (10, 54), 0.5)
+        cv2.imshow(WIN, img)
+        k = cv2.waitKey(30) & 0xFF
+        if k == 27:
+            return None
+    cv2.setMouseCallback(WIN, lambda *a: None)
+
+    (x1, y1), (x2, y2) = pts
+    x1, x2 = sorted((x1, x2))
+    y1, y2 = sorted((y1, y2))
+    w, h = size
+    rect_norm = {"x": x1 / w, "y": y1 / h, "w": (x2 - x1) / w, "h": (y2 - y1) / h}
+
+    in_label = input("Label for INSIDE the rectangle [Inside]: ").strip() or "Inside"
+    out_label = input("Label for OUTSIDE the rectangle [Outside]: ").strip() or "Outside"
+    return {"rect": rect_norm, "in_label": in_label, "out_label": out_label}
+
+
+def draw_doorway_overlay(img, counter: DoorwayCounter) -> None:
+    r = counter.rect
+    x1, y1 = int(r["x"]), int(r["y"])
+    x2, y2 = int(r["x"] + r["w"]), int(r["y"] + r["h"])
+    cv2.rectangle(img, (x1, y1), (x2, y2), (0, 220, 255), 2)
+    _txt(img, counter.in_label, (x1 + 6, y1 + 22), 0.55, (0, 220, 255), 2)
+    _txt(img, counter.out_label, (x1 + 6, y2 - 10), 0.5, (150, 200, 255))
+
+
+def draw_panel(h: int, counter: EntryExitCounter | DoorwayCounter, qa: QueueAnalyzer, fps: float, bus: EventBus) -> np.ndarray:
     panel = np.full((h, 380, 3), (30, 24, 20), np.uint8)
     y = 34
 
@@ -69,12 +125,17 @@ def main():
     ap.add_argument("--headless", action="store_true", help="no window (for automated runs/tests)")
     ap.add_argument("--duration", type=float, default=0, help="stop after N seconds (0 = run until q)")
     ap.add_argument("--counters", type=int, default=1)
+    ap.add_argument("--counting-mode", choices=["line", "doorway"], default="line",
+                     help="line: click-crossing counter (default). doorway: click a rectangle; "
+                          "entering it counts as IN, leaving it counts as OUT.")
+    ap.add_argument("--doorway-config", default=None, help="override path to the doorway rectangle config")
     args = ap.parse_args()
 
     settings = load_settings().get("footfall", {})
     bus = EventBus()
     cameras = load_cameras()
     simulate = args.simulate or cameras.get("entrance", {}).get("url", "simulate") == "simulate"
+    doorway_path = args.doorway_config or "config/doorway.json"
 
     if not args.headless:
         cv2.namedWindow(WIN, cv2.WINDOW_NORMAL)
@@ -83,6 +144,7 @@ def main():
         sim = PeopleSimulator()
         geom = sim.geometry()
         w, h = sim.w, sim.h
+        doorway_cfg = load_doorway() if args.counting_mode == "doorway" else None
     else:
         entrance_src = open_source(cameras.get("entrance", {}))
         frame = None
@@ -100,10 +162,31 @@ def main():
         from storesmart.common.detector import PersonTracker
         tracker = PersonTracker(settings.get("model", "yolov8n.pt"))
 
-    counter = EntryExitCounter(
-        line=_scale(geom["line"], w, h), in_from=geom["in_from"],
-        margin=settings.get("margin_px", 12), lost_after=settings.get("lost_after_s", 1.5),
-    )
+        doorway_cfg = None
+        if args.counting_mode == "doorway":
+            import os
+
+            if os.path.exists(doorway_path):
+                doorway_cfg = load_doorway(doorway_path)
+            elif args.headless:
+                raise RuntimeError(f"no doorway config at {doorway_path} — run once with a window to draw it")
+            else:
+                doorway_cfg = run_doorway_setup(entrance_src.read)
+                if doorway_cfg is None:
+                    return
+                save_doorway(doorway_cfg, doorway_path)
+
+    if args.counting_mode == "doorway":
+        counter = DoorwayCounter(
+            rect=scale_rect(doorway_cfg["rect"], w, h),
+            in_label=doorway_cfg.get("in_label", "Inside"), out_label=doorway_cfg.get("out_label", "Outside"),
+            lost_after=settings.get("lost_after_s", 1.5),
+        )
+    else:
+        counter = EntryExitCounter(
+            line=_scale(geom["line"], w, h), in_from=geom["in_from"],
+            margin=settings.get("margin_px", 12), lost_after=settings.get("lost_after_s", 1.5),
+        )
     qa = QueueAnalyzer(
         queue_poly=_scale(geom["queue"], w, h) if geom.get("queue") else None,
         service_poly=_scale(geom["service"], w, h) if geom.get("service") else None,
@@ -156,6 +239,8 @@ def main():
                 img = render_raw(frame)
                 cv2.putText(img, "RAW VIEW - setup only, nothing is saved", (10, 24),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2, cv2.LINE_AA)
+            if isinstance(counter, DoorwayCounter):
+                draw_doorway_overlay(img, counter)
             panel = draw_panel(img.shape[0], counter, qa, fps, bus)
             cv2.imshow(WIN, np.hstack([img, panel]))
             wait_ms = max(1, int((dt_sim - (time.time() - tnow)) * 1000)) if simulate else 1
@@ -168,7 +253,7 @@ def main():
                 qa.set_counters(qa.counters + 1)
             elif k in (ord("-"), ord("_")):
                 qa.set_counters(qa.counters - 1)
-            elif k == ord("f"):
+            elif k == ord("f") and isinstance(counter, EntryExitCounter):
                 counter.flip_direction()
 
         if args.duration and now >= args.duration:

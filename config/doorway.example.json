@@ -1,0 +1,5 @@
+{
+  "rect": {"x": 0.35, "y": 0.05, "w": 0.3, "h": 0.9},
+  "in_label": "Inside the store",
+  "out_label": "Outside / street"
+}
