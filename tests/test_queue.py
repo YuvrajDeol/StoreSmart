@@ -7,22 +7,36 @@ def make_bus(tmp_path):
     return EventBus(db_path=tmp_path / "test.db")
 
 
-def test_entry_exit_counter_counts_crossing(tmp_path):
+def test_entry_exit_counter_counts_full_crossing(tmp_path):
     bus = make_bus(tmp_path)
-    counter = EntryExitCounter(line=[[100, 0], [100, 200]], in_from=-1, margin=5)
-    # track starts on the "in_from" side, then crosses to the other side
-    counter.update([(1, (150, 90, 170, 110))], now=0.0, bus=bus)
-    counter.update([(1, (30, 90, 50, 110))], now=1.0, bus=bus)
+    counter = EntryExitCounter(line=[[100, 0], [100, 200]], in_from=-1, buffer_px=10)
+    # track starts confirmed on the "in_from" side, then crosses fully through
+    # the buffer to the other side
+    counter.update([(1, (150, 90, 170, 110))], now=0.0, bus=bus)  # x=160, clearly right of line
+    counter.update([(1, (30, 90, 50, 110))], now=1.0, bus=bus)    # x=40, clearly left of line
     assert counter.entries == 1
     assert counter.exits == 0
     assert counter.inside == 1
 
 
-def test_entry_exit_counter_ignores_margin_jitter(tmp_path):
+def test_entry_exit_counter_ignores_buffer_jitter(tmp_path):
     bus = make_bus(tmp_path)
-    counter = EntryExitCounter(line=[[100, 0], [100, 200]], in_from=1, margin=20)
-    counter.update([(1, (150, 90, 170, 110))], now=0.0, bus=bus)
-    counter.update([(1, (95, 90, 105, 110))], now=1.0, bus=bus)  # within dead-band
+    counter = EntryExitCounter(line=[[100, 0], [100, 200]], in_from=1, buffer_px=20)
+    counter.update([(1, (150, 90, 170, 110))], now=0.0, bus=bus)  # x=160, confirmed right
+    counter.update([(1, (95, 90, 105, 110))], now=1.0, bus=bus)   # x=100, inside the buffer band
+    assert counter.entries == 0
+    assert counter.exits == 0
+
+
+def test_entry_exit_counter_ignores_repeated_jitter_near_line(tmp_path):
+    """A person lingering right at the line shouldn't get counted repeatedly
+    just because detection noise nudges them a few pixels each frame — this
+    is the bug the buffer zone exists to prevent."""
+    bus = make_bus(tmp_path)
+    counter = EntryExitCounter(line=[[100, 0], [100, 200]], in_from=1, buffer_px=20)
+    counter.update([(1, (150, 90, 170, 110))], now=0.0, bus=bus)  # x=160, confirmed right
+    for i, x in enumerate([95, 105, 98, 102, 96, 104]):  # noisy wobble, all inside the buffer
+        counter.update([(1, (x, 90, x + 20, 110))], now=1.0 + i, bus=bus)
     assert counter.entries == 0
     assert counter.exits == 0
 

@@ -1,52 +1,59 @@
-"""Line-crossing entry/exit counter with a dead-band margin against jitter.
+"""Line-crossing entry/exit counter with a buffer zone against jitter.
 
-Ported from sanket_demo.py's Analytics class, split into a counter and a
-queue analyzer so each has one job. `in_from` is the side of the line a
-person is on *before* they enter — i.e. the "outside"/away-from-camera side
-for a typical entrance setup. Crossing away from that side counts as an
-entry; crossing back onto it counts as an exit. Which side that is gets
-decided once during setup (see run_line_setup in run.py) by clicking a
-point on whichever side should count as "outside", or toggled live with the
-'f' key.
+`in_from` is the side of the line a person is on *before* they enter — i.e.
+the "outside"/away-from-camera side for a typical entrance setup. Which side
+that is gets decided once during setup (see run_line_setup in run.py) by
+clicking a point on whichever side should count as "outside", or toggled
+live with the 'f' key.
+
+Simple hard rule: a track that is confirmed clearly on the outside, then
+later confirmed clearly on the inside, is one entry. Confirmed inside, then
+confirmed outside, is one exit. "Confirmed" means the foot point is more
+than `buffer_px` away from the line on that side — anything within the
+buffer band around the line is a no-man's-land that doesn't change the
+track's confirmed side, so detector jitter right at the line can't flip the
+count back and forth. A crossing only registers once the track has fully
+walked through the buffer and out the other side.
 """
 from __future__ import annotations
 
 from storesmart.common.bus import EventBus
 from storesmart.common.config import load_json, save_json
-from storesmart.common.geometry import side_of_line
+from storesmart.common.geometry import signed_distance
 
 DEFAULT_PATH = "config/line.json"
 EXAMPLE_PATH = "config/line.example.json"
 
 
 class EntryExitCounter:
-    def __init__(self, line: list[list[float]], in_from: int = 1, margin: float = 12,
+    def __init__(self, line: list[list[float]], in_from: int = 1, buffer_px: float = 40,
                  lost_after: float = 1.5, cam: str = "entrance",
                  in_label: str = "Inside", out_label: str = "Outside"):
         self.line = line
         self.in_from = in_from
-        self.margin = margin
+        self.buffer_px = buffer_px
         self.lost_after = lost_after
         self.cam = cam
         self.in_label = in_label
         self.out_label = out_label
-        self.side: dict[int, int] = {}
+        self.confirmed_side: dict[int, int] = {}
         self.last_seen: dict[int, float] = {}
         self.entries = 0
         self.exits = 0
 
     def flip_direction(self) -> None:
         self.in_from = -self.in_from
-        self.side.clear()
+        self.confirmed_side.clear()
 
     def update(self, tracks: list[tuple[int, tuple[int, int, int, int]]], now: float, bus: EventBus) -> None:
         for tid, (x1, y1, x2, y2) in tracks:
             foot = ((x1 + x2) / 2, y2)
             self.last_seen[tid] = now
-            s = side_of_line(self.line, foot, self.margin)
-            if s == 0:
-                continue
-            prev = self.side.get(tid)
+            d = signed_distance(self.line, foot)
+            if abs(d) < self.buffer_px:
+                continue  # inside the buffer band — not clearly on either side yet
+            s = 1 if d > 0 else -1
+            prev = self.confirmed_side.get(tid)
             if prev is not None and prev != s:
                 if prev == self.in_from:
                     self.entries += 1
@@ -54,11 +61,11 @@ class EntryExitCounter:
                 else:
                     self.exits += 1
                     bus.emit({"cam": self.cam, "type": "exit"})
-            self.side[tid] = s
+            self.confirmed_side[tid] = s
         stale = [t for t, ts in self.last_seen.items() if now - ts > self.lost_after]
         for tid in stale:
             self.last_seen.pop(tid, None)
-            self.side.pop(tid, None)
+            self.confirmed_side.pop(tid, None)
 
     @property
     def inside(self) -> int:

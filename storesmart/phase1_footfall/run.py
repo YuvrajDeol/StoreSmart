@@ -260,13 +260,13 @@ def main():
     elif line_cfg is not None:
         counter = EntryExitCounter(
             line=_scale(line_cfg["line"], w, h), in_from=line_cfg["in_from"],
-            margin=settings.get("margin_px", 12), lost_after=settings.get("lost_after_s", 1.5),
+            buffer_px=settings.get("buffer_px", 40), lost_after=settings.get("lost_after_s", 1.5),
             in_label=line_cfg.get("in_label", "Inside"), out_label=line_cfg.get("out_label", "Outside"),
         )
     else:
         counter = EntryExitCounter(
             line=_scale(geom["line"], w, h), in_from=geom["in_from"],
-            margin=settings.get("margin_px", 12), lost_after=settings.get("lost_after_s", 1.5),
+            buffer_px=settings.get("buffer_px", 40), lost_after=settings.get("lost_after_s", 1.5),
         )
     qa = QueueAnalyzer(
         queue_poly=_scale(geom["queue"], w, h) if geom.get("queue") else None,
