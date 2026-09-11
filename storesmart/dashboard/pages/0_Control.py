@@ -160,34 +160,41 @@ for module in MODULES:
                 help="A webcam index (0, 1), a stream URL (http://IP:8080/video), "
                      "a snapshot URL (http://IP:8080/shot.jpg) or a video file path.",
             )
-            scol1, scol2 = st.columns([1, 3])
+            scol1, scol2, scol3 = st.columns([1, 1, 2])
             if scol1.button("🔌 Test source", key=f"test_{key}", use_container_width=True):
                 with st.spinner(f"Probing {source}…"):
-                    result = processes.probe_camera(source)
+                    st.session_state[f"probe_{key}"] = processes.probe_camera(source)
+            saved_note = ""
+            if scol2.button("💾 Save source", key=f"save_{key}", use_container_width=True,
+                            disabled=(source == current),
+                            help="Writes it to config/cameras.local.yaml (gitignored)"):
+                updated = dict(cameras)
+                entry = dict(updated.get(role, {}))
+                entry["url"] = source
+                entry.setdefault("role", role)
+                updated[role] = entry
+                path = save_cameras_local(updated)
+                saved_note = f"Saved to {path.relative_to(REPO_ROOT)}"
+            if source != current and not saved_note:
+                scol3.caption("⚠️ Unsaved — Start uses the saved source, so save it first.")
+            if saved_note:
+                scol3.success(saved_note)
+
+            result = st.session_state.get(f"probe_{key}")
+            if result:
                 if result.get("ok"):
                     size = (f" · {result.get('width')}×{result.get('height')}"
                             if result.get("width") else "")
-                    scol2.success(f"✅ {result.get('detail')}{size}")
+                    st.success(f"✅ {result.get('detail')}{size}")
                 else:
-                    scol2.error(f"❌ {result.get('detail')}")
+                    st.error(f"❌ {result.get('detail')}")
                     if source.isdigit() and not result.get("unauthorized"):
-                        scol2.caption(
+                        st.caption(
                             "If this is meant to be an iPhone via Continuity Camera: the "
                             "dashboard can't wake it. Open FaceTime and select the iPhone "
                             "first, or use the phone's `http://…:8080/video` URL instead. "
                             "Use **Detect cameras** above to see what macOS has."
                         )
-
-            if source != current:
-                if scol2.button("💾 Save this source", key=f"save_{key}"):
-                    updated = dict(cameras)
-                    entry = dict(updated.get(role, {}))
-                    entry["url"] = source
-                    entry.setdefault("role", role)
-                    updated[role] = entry
-                    path = save_cameras_local(updated)
-                    st.success(f"Saved to {path.relative_to(REPO_ROOT)}")
-                    st.rerun()
 
             # ---- per-module live options
             if key == "footfall":
