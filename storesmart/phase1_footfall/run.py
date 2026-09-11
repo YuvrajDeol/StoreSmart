@@ -20,7 +20,8 @@ from storesmart.common.bus import EventBus
 from storesmart.common.config import load_cameras, load_settings
 from storesmart.common.privacy import VIEWS, render_blurred, render_raw, render_zero_frame
 from storesmart.common.video import open_source
-from storesmart.phase1_footfall.counter import EntryExitCounter
+from storesmart.common.geometry import side_of_line
+from storesmart.phase1_footfall.counter import EntryExitCounter, load_line_config, save_line_config
 from storesmart.phase1_footfall.doorway import DoorwayCounter, load_doorway, save_doorway, scale_rect
 from storesmart.phase1_footfall.queue import QueueAnalyzer
 from storesmart.sim.people_sim import PeopleSimulator
@@ -86,6 +87,67 @@ def draw_doorway_overlay(img, counter: DoorwayCounter) -> None:
     _txt(img, counter.out_label, (x1 + 6, y2 - 10), 0.5, (150, 200, 255))
 
 
+def run_line_setup(get_frame) -> dict | None:
+    """Click 2 points to draw the entry line, then click one more point on
+    whichever side should count as OUTSIDE (e.g. away from the camera,
+    towards the street). Labels are typed in the terminal afterwards.
+    Returns a normalized {line, in_from, in_label, out_label} dict, or None
+    if cancelled with ESC."""
+    pts: list[tuple[int, int]] = []
+    cv2.setMouseCallback(WIN, lambda e, x, y, *_: pts.append((x, y)) if e == cv2.EVENT_LBUTTONDOWN else None)
+    size = None
+    while len(pts) < 3:
+        frame = get_frame()
+        if frame is None:
+            if cv2.waitKey(30) & 0xFF == 27:
+                return None
+            continue
+        size = (frame.shape[1], frame.shape[0])
+        img = frame.copy()
+        for p in pts[:2]:
+            cv2.circle(img, p, 6, (0, 0, 255), -1)
+        if len(pts) == 2:
+            cv2.line(img, pts[0], pts[1], (0, 220, 255), 2)
+        if len(pts) >= 3:
+            break
+        stage = "click the line's 2 endpoints" if len(pts) < 2 else \
+            "now click a point on the OUTSIDE (e.g. away from camera / towards the street)"
+        _txt(img, f"SETUP - {stage}", (10, 28), 0.55, (0, 255, 255), 2)
+        _txt(img, "ESC = cancel   (raw view, setup only, nothing is saved)", (10, 54), 0.5)
+        cv2.imshow(WIN, img)
+        k = cv2.waitKey(30) & 0xFF
+        if k == 27:
+            return None
+    cv2.setMouseCallback(WIN, lambda *a: None)
+
+    line_px = pts[:2]
+    outside_point = pts[2]
+    in_from = side_of_line(line_px, outside_point, margin=0) or 1
+    w, h = size
+    line_norm = [[x / w, y / h] for x, y in line_px]
+
+    in_label = input("Label for INSIDE the store [Inside]: ").strip() or "Inside"
+    out_label = input("Label for OUTSIDE the store [Outside]: ").strip() or "Outside"
+    return {"line": line_norm, "in_from": in_from, "in_label": in_label, "out_label": out_label}
+
+
+def draw_line_overlay(img, counter: EntryExitCounter) -> None:
+    ax, ay = (int(v) for v in counter.line[0])
+    bx, by = (int(v) for v in counter.line[1])
+    cv2.line(img, (ax, ay), (bx, by), (0, 220, 255), 3)
+    mx, my = (ax + bx) // 2, (ay + by) // 2
+    nx, ny = (by - ay), -(bx - ax)
+    norm = (nx ** 2 + ny ** 2) ** 0.5 + 1e-6
+    offset = 40
+    p1 = (int(mx + nx / norm * offset), int(my + ny / norm * offset))
+    p2 = (int(mx - nx / norm * offset), int(my - ny / norm * offset))
+    side1 = side_of_line(counter.line, p1, margin=0)
+    label1, label2 = (counter.out_label, counter.in_label) if side1 == counter.in_from \
+        else (counter.in_label, counter.out_label)
+    _txt(img, label1, p1, 0.55, (150, 200, 255), 2)
+    _txt(img, label2, p2, 0.55, (0, 220, 255), 2)
+
+
 def draw_panel(h: int, counter: EntryExitCounter | DoorwayCounter, qa: QueueAnalyzer, fps: float, bus: EventBus) -> np.ndarray:
     panel = np.full((h, 380, 3), (30, 24, 20), np.uint8)
     y = 34
@@ -129,6 +191,7 @@ def main():
                      help="line: click-crossing counter (default). doorway: click a rectangle; "
                           "entering it counts as IN, leaving it counts as OUT.")
     ap.add_argument("--doorway-config", default=None, help="override path to the doorway rectangle config")
+    ap.add_argument("--line-config", default=None, help="override path to the entry line config")
     args = ap.parse_args()
 
     settings = load_settings().get("footfall", {})
@@ -136,6 +199,7 @@ def main():
     cameras = load_cameras()
     simulate = args.simulate or cameras.get("entrance", {}).get("url", "simulate") == "simulate"
     doorway_path = args.doorway_config or "config/doorway.json"
+    line_path = args.line_config or "config/line.json"
 
     if not args.headless:
         cv2.namedWindow(WIN, cv2.WINDOW_NORMAL)
@@ -145,6 +209,7 @@ def main():
         geom = sim.geometry()
         w, h = sim.w, sim.h
         doorway_cfg = load_doorway() if args.counting_mode == "doorway" else None
+        line_cfg = None  # simulator's own geometry() already gives a line/in_from
     else:
         entrance_src = open_source(cameras.get("entrance", {}))
         frame = None
@@ -155,17 +220,15 @@ def main():
         if frame is None:
             raise RuntimeError(f"cannot reach camera at {cameras['entrance']['url']} — check the hotspot")
         h, w = frame.shape[:2]
-        geom = {"line": [[0.25, 0.10], [0.25, 0.92]],
-                "queue": [[0.42, 0.38], [0.74, 0.38], [0.74, 0.62], [0.42, 0.62]],
-                "service": [[0.77, 0.28], [0.93, 0.28], [0.93, 0.72], [0.77, 0.72]],
-                "in_from": 1}
+        geom = {"queue": [[0.42, 0.38], [0.74, 0.38], [0.74, 0.62], [0.42, 0.62]],
+                "service": [[0.77, 0.28], [0.93, 0.28], [0.93, 0.72], [0.77, 0.72]]}
         from storesmart.common.detector import PersonTracker
         tracker = PersonTracker(settings.get("model", "yolov8n.pt"))
 
+        import os
+
         doorway_cfg = None
         if args.counting_mode == "doorway":
-            import os
-
             if os.path.exists(doorway_path):
                 doorway_cfg = load_doorway(doorway_path)
             elif args.headless:
@@ -176,11 +239,29 @@ def main():
                     return
                 save_doorway(doorway_cfg, doorway_path)
 
+        line_cfg = None
+        if args.counting_mode == "line":
+            if os.path.exists(line_path):
+                line_cfg = load_line_config(line_path)
+            elif args.headless:
+                raise RuntimeError(f"no line config at {line_path} — run once with a window to draw it")
+            else:
+                line_cfg = run_line_setup(entrance_src.read)
+                if line_cfg is None:
+                    return
+                save_line_config(line_cfg, line_path)
+
     if args.counting_mode == "doorway":
         counter = DoorwayCounter(
             rect=scale_rect(doorway_cfg["rect"], w, h),
             in_label=doorway_cfg.get("in_label", "Inside"), out_label=doorway_cfg.get("out_label", "Outside"),
             lost_after=settings.get("lost_after_s", 1.5),
+        )
+    elif line_cfg is not None:
+        counter = EntryExitCounter(
+            line=_scale(line_cfg["line"], w, h), in_from=line_cfg["in_from"],
+            margin=settings.get("margin_px", 12), lost_after=settings.get("lost_after_s", 1.5),
+            in_label=line_cfg.get("in_label", "Inside"), out_label=line_cfg.get("out_label", "Outside"),
         )
     else:
         counter = EntryExitCounter(
@@ -241,6 +322,8 @@ def main():
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2, cv2.LINE_AA)
             if isinstance(counter, DoorwayCounter):
                 draw_doorway_overlay(img, counter)
+            elif isinstance(counter, EntryExitCounter):
+                draw_line_overlay(img, counter)
             panel = draw_panel(img.shape[0], counter, qa, fps, bus)
             cv2.imshow(WIN, np.hstack([img, panel]))
             wait_ms = max(1, int((dt_sim - (time.time() - tnow)) * 1000)) if simulate else 1

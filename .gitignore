@@ -19,6 +19,7 @@ config/cameras.local.yaml
 config/store_map.json
 config/shelf_slots.json
 config/doorway.json
+config/line.json
 
 .pytest_cache/
 .mypy_cache/
