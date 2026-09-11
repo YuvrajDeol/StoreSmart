@@ -59,14 +59,17 @@ def test_entry_exit_counter_initial_inside_baseline(tmp_path):
 def test_entry_exit_counter_wide_box_counts_as_two_people(tmp_path):
     bus = make_bus(tmp_path)
     counter = EntryExitCounter(line=[[100, 0], [100, 200]], in_from=-1, buffer_px=5)
-    # calibrate the single-person baseline first
-    counter.update([(1, (150, 90, 170, 110))], now=0.0, bus=bus)   # width 20, confirmed right
-    counter.update([(1, (30, 90, 50, 110))], now=1.0, bus=bus)     # width 20, crosses -> 1 entry
-    assert counter.entries == 1
+    # calibrate the single-person baseline first (needs a handful of samples
+    # before the group-size ratio check kicks in — see GroupSizeEstimator)
+    for tid in range(5):
+        x = 150 + tid  # vary track id/position slightly, same ~20px width each time
+        counter.update([(tid, (x, 90, x + 20, 110))], now=tid * 2.0, bus=bus)       # confirmed right
+        counter.update([(tid, (x - 120, 90, x - 100, 110))], now=tid * 2.0 + 1, bus=bus)  # crosses -> 1 entry
+    assert counter.entries == 5
     # now a much wider box (two people merged) crosses the same way
-    counter.update([(2, (150, 90, 190, 110))], now=2.0, bus=bus)   # width 40, confirmed right
-    counter.update([(2, (10, 90, 50, 110))], now=3.0, bus=bus)     # width 40, crosses -> should count as 2
-    assert counter.entries == 3  # 1 (single) + 2 (merged pair)
+    counter.update([(99, (150, 90, 190, 110))], now=20.0, bus=bus)   # width 40, confirmed right
+    counter.update([(99, (10, 90, 50, 110))], now=21.0, bus=bus)     # width 40, crosses -> should count as 2
+    assert counter.entries == 7  # 5 (singles) + 2 (merged pair)
 
 
 def test_queue_alert_uses_hysteresis(tmp_path):
