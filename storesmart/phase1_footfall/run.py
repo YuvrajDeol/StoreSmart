@@ -143,20 +143,48 @@ def run_line_setup(get_frame) -> dict | None:
 
 
 def draw_line_overlay(img, counter: EntryExitCounter) -> None:
-    ax, ay = (int(v) for v in counter.line[0])
-    bx, by = (int(v) for v in counter.line[1])
-    cv2.line(img, (ax, ay), (bx, by), (0, 220, 255), 3)
-    mx, my = (ax + bx) // 2, (ay + by) // 2
-    nx, ny = (by - ay), -(bx - ax)
-    norm = (nx ** 2 + ny ** 2) ** 0.5 + 1e-6
-    offset = 40
-    p1 = (int(mx + nx / norm * offset), int(my + ny / norm * offset))
-    p2 = (int(mx - nx / norm * offset), int(my - ny / norm * offset))
-    side1 = side_of_line(counter.line, p1, margin=0)
-    label1, label2 = (counter.out_label, counter.in_label) if side1 == counter.in_from \
-        else (counter.in_label, counter.out_label)
-    _txt(img, label1, p1, 0.55, (150, 200, 255), 2)
-    _txt(img, label2, p2, 0.55, (0, 220, 255), 2)
+    """Draw the entry line, its buffer band, and which side is which.
+
+    Two things here matter for getting a setup right. The line is drawn
+    extended across the whole frame, because the counter treats it as
+    infinite — drawing only the clicked segment made people think walking
+    around its end avoided it. And the buffer band is drawn explicitly: a
+    crossing only counts once a foot point is clear of that band on both
+    sides in turn, so it has to be obvious how much room that needs.
+    """
+    h, w = img.shape[:2]
+    (ax, ay), (bx, by) = counter.line
+    dx, dy = bx - ax, by - ay
+    length = (dx * dx + dy * dy) ** 0.5 + 1e-6
+    ux, uy = dx / length, dy / length          # along the line
+    nx, ny = -uy, ux                           # perpendicular to it
+
+    def extended(offset: float):
+        far = max(w, h) * 2
+        cx, cy = (ax + bx) / 2 + nx * offset, (ay + by) / 2 + ny * offset
+        return ((int(cx - ux * far), int(cy - uy * far)),
+                (int(cx + ux * far), int(cy + uy * far)))
+
+    # buffer band edges — inside this band nothing is committed
+    for offset in (counter.buffer_px, -counter.buffer_px):
+        p, q = extended(offset)
+        cv2.line(img, p, q, (90, 90, 110), 1, cv2.LINE_AA)
+
+    p, q = extended(0)
+    cv2.line(img, p, q, (70, 150, 180), 1, cv2.LINE_AA)   # infinite extent, dim
+    cv2.line(img, (int(ax), int(ay)), (int(bx), int(by)), (0, 220, 255), 3)  # clicked part
+
+    mx, my = (ax + bx) / 2, (ay + by) / 2
+    gap = counter.buffer_px + 26
+    near = (int(mx + nx * gap), int(my + ny * gap))
+    far = (int(mx - nx * gap), int(my - ny * gap))
+    near_is_out = side_of_line(counter.line, near, margin=0) == counter.in_from
+    _txt(img, counter.out_label if near_is_out else counter.in_label, near, 0.6,
+         (150, 200, 255) if near_is_out else (120, 220, 120), 2)
+    _txt(img, counter.in_label if near_is_out else counter.out_label, far, 0.6,
+         (120, 220, 120) if near_is_out else (150, 200, 255), 2)
+    _txt(img, f"buffer {counter.buffer_px:.0f}px — cross fully past both grey lines",
+         (12, h - 14), 0.45, (170, 170, 185), 1)
 
 
 def draw_tracks_overlay(img, tracks, counter) -> None:
@@ -246,6 +274,10 @@ def main():
                           "entering it counts as IN, leaving it counts as OUT.")
     ap.add_argument("--doorway-config", default=None, help="override path to the doorway rectangle config")
     ap.add_argument("--line-config", default=None, help="override path to the entry line config")
+    ap.add_argument("--buffer-px", type=float, default=None,
+                     help="how far past the line a foot point must get before a side counts "
+                          "as confirmed (default from settings.yaml). Lower it if the walkable "
+                          "space either side of your line is tight.")
     ap.add_argument("--initial-inside", type=int, default=None,
                      help="how many people are already inside the store at startup "
                           "(skips the interactive prompt; useful for --headless/--simulate runs)")
@@ -331,14 +363,14 @@ def main():
     elif line_cfg is not None:
         counter = EntryExitCounter(
             line=_scale(line_cfg["line"], w, h), in_from=line_cfg["in_from"],
-            buffer_px=settings.get("buffer_px", 40), lost_after=settings.get("lost_after_s", 1.5),
+            buffer_px=(args.buffer_px if args.buffer_px is not None else settings.get("buffer_px", 40)), lost_after=settings.get("lost_after_s", 1.5),
             in_label=line_cfg.get("in_label", "Inside"), out_label=line_cfg.get("out_label", "Outside"),
             initial_inside=initial_inside, max_group_size=max_group_size,
         )
     else:
         counter = EntryExitCounter(
             line=_scale(geom["line"], w, h), in_from=geom["in_from"],
-            buffer_px=settings.get("buffer_px", 40), lost_after=settings.get("lost_after_s", 1.5),
+            buffer_px=(args.buffer_px if args.buffer_px is not None else settings.get("buffer_px", 40)), lost_after=settings.get("lost_after_s", 1.5),
             initial_inside=initial_inside, max_group_size=max_group_size,
         )
     qa = QueueAnalyzer(
