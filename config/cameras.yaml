@@ -15,6 +15,9 @@ cameras:
   entrance:
     role: entrance
     url: simulate
+    # rotate: 90   # 0/90/180/270 clockwise — set this if a sideways-mounted
+    #              # phone streams a rotated image (people must look upright
+    #              # for detection to work well)
   counter:
     role: counter
     url: simulate
