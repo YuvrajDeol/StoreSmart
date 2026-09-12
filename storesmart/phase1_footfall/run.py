@@ -20,7 +20,7 @@ from storesmart.common.bus import EventBus
 from storesmart.common.config import load_cameras, load_settings
 from storesmart.common.privacy import VIEWS, render_blurred, render_raw, render_zero_frame
 from storesmart.common.video import open_source
-from storesmart.common.geometry import side_of_line
+from storesmart.common.geometry import point_in_rect, side_of_line, signed_distance
 from storesmart.phase1_footfall.counter import EntryExitCounter, load_line_config, save_line_config
 from storesmart.phase1_footfall.doorway import DoorwayCounter, load_doorway, save_doorway, scale_rect
 from storesmart.phase1_footfall.queue import QueueAnalyzer
@@ -157,6 +157,40 @@ def draw_line_overlay(img, counter: EntryExitCounter) -> None:
         else (counter.in_label, counter.out_label)
     _txt(img, label1, p1, 0.55, (150, 200, 255), 2)
     _txt(img, label2, p2, 0.55, (0, 220, 255), 2)
+
+
+def draw_tracks_overlay(img, tracks, counter) -> None:
+    """Mark each tracked person's foot point — the single point the counter
+    actually uses — with its track id and which side of the line it is on.
+
+    Without this there is no way to tell a detection problem from a geometry
+    problem: the view shows blurred people either way, while the count stays
+    at zero.
+    """
+    for tid, (x1, y1, x2, y2) in tracks:
+        foot = (int((x1 + x2) / 2), int(y2))
+        label, colour = f"#{tid}", (255, 200, 0)
+
+        if isinstance(counter, EntryExitCounter):
+            distance = signed_distance(counter.line, foot)
+            if abs(distance) < counter.buffer_px:
+                colour = (0, 220, 255)          # in the buffer band — not committed
+                label += " ~line"
+            else:
+                side = 1 if distance > 0 else -1
+                inside = side != counter.in_from
+                colour = (120, 220, 120) if inside else (200, 160, 90)
+                label += f" {counter.in_label if inside else counter.out_label}"
+            label += f" {abs(distance):.0f}px"
+        elif isinstance(counter, DoorwayCounter):
+            inside = point_in_rect(counter.rect, foot)
+            colour = (120, 220, 120) if inside else (200, 160, 90)
+            label += f" {counter.in_label if inside else counter.out_label}"
+
+        cv2.circle(img, foot, 8, colour, -1)
+        cv2.circle(img, foot, 8, (20, 20, 20), 1)
+        cv2.line(img, (foot[0], foot[1] - 18), foot, colour, 2)
+        _txt(img, label, (foot[0] + 12, foot[1] - 6), 0.5, colour, 2)
 
 
 def draw_panel(h: int, counter: EntryExitCounter | DoorwayCounter, qa: QueueAnalyzer, fps: float, bus: EventBus) -> np.ndarray:
@@ -354,6 +388,7 @@ def main():
                 draw_doorway_overlay(img, counter)
             elif isinstance(counter, EntryExitCounter):
                 draw_line_overlay(img, counter)
+            draw_tracks_overlay(img, tracks, counter)
             panel = draw_panel(img.shape[0], counter, qa, fps, bus)
             cv2.imshow(WIN, np.hstack([img, panel]))
             wait_ms = max(1, int((dt_sim - (time.time() - tnow)) * 1000)) if simulate else 1
