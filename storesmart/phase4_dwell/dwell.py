@@ -11,10 +11,18 @@ from storesmart.common.geometry import expand_rect, point_in_rect
 from storesmart.phase2_map.map_model import StoreMap
 
 
+# "No zone change is pending." Distinct from None, which is itself a real
+# candidate meaning "outside every zone" — conflating the two made a committed
+# entry reset candidate_zone to None, so the first sample taken outside the
+# zone compared equal to the stale candidate and committed the exit with no
+# debounce at all.
+_NO_CANDIDATE = object()
+
+
 @dataclass
 class _TrackZoneState:
     zone: str | None = None
-    candidate_zone: str | None = None
+    candidate_zone: str | None | object = _NO_CANDIDATE
     candidate_since: float = 0.0
     entered_at: float = 0.0
 
@@ -54,7 +62,7 @@ class DwellTracker:
         current_zone = self._zone_at(point)
 
         if current_zone == state.zone:
-            state.candidate_zone = None
+            state.candidate_zone = _NO_CANDIDATE
             return
 
         if current_zone != state.candidate_zone:
@@ -71,7 +79,7 @@ class DwellTracker:
             bus.emit({"cam": "floor", "type": "dwell", "zone": state.zone, "dwell_s": round(dwell_s, 1)})
         state.zone = current_zone
         state.entered_at = now
-        state.candidate_zone = None
+        state.candidate_zone = _NO_CANDIDATE
 
     def remove_track(self, track_id: int, now: float, bus: EventBus) -> None:
         state = self._states.pop(track_id, None)

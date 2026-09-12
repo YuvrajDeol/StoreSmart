@@ -58,9 +58,11 @@ isn't blocking incoming connections from the phone's IP.
    leaving it counts as OUT — see `--counting-mode doorway`), queue length,
    service time, wait forecast (from shoppers already inside), and an
    open-another-counter recommendation with hysteresis.
-2. **Store map** — draw shelves/doors/counters/cameras on a to-scale map;
-   a 4-point homography maps the floor camera's foot points onto it, shown
-   as live anonymous dots.
+2. **Store map** — sketch shelves/doors/counters/cameras by click-and-drag
+   on a to-scale canvas, optionally tracing an uploaded floor-plan image, with
+   camera facing/field-of-view arrows for layout planning; a 4-point
+   homography maps the floor camera's foot points onto it, shown as live
+   anonymous dots.
 3. **Shelf gaps + stock** — poll a shelf snapshot, detect empty slots via a
    white-backdrop HSV threshold, and combine that with a SQLite stock DB for
    refill-from-storeroom vs order-from-distributor reminders, run-out

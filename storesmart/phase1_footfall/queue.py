@@ -15,7 +15,8 @@ class QueueAnalyzer:
     def __init__(self, queue_poly: list[list[float]] | None, service_poly: list[list[float]] | None,
                  counters: int = 1, threshold_s: float = 12, horizon_s: float = 10,
                  join_prob: float = 1.0, hold_s: float = 3, window_s: float = 30,
-                 default_service_s: float = 6, min_service_s: float = 1.0, cam: str = "counter"):
+                 default_service_s: float = 6, min_service_s: float = 1.0, cam: str = "counter",
+                 emit_interval_s: float = 1.0):
         self.queue_poly = _as_poly(queue_poly)
         self.service_poly = _as_poly(service_poly)
         self.counters = counters
@@ -27,6 +28,8 @@ class QueueAnalyzer:
         self.default_service_s = default_service_s
         self.min_service_s = min_service_s
         self.cam = cam
+        self.emit_interval_s = emit_interval_s
+        self._last_queue_emit = -1e9
 
         self.in_service: dict[int, float] = {}
         self.durations: deque[float] = deque(maxlen=10)
@@ -72,11 +75,17 @@ class QueueAnalyzer:
         self.forecast_wait_plus = self._forecast(self.counters + 1, mu)
         self._alerting(now, bus)
 
-        bus.emit({
-            "cam": self.cam, "type": "queue", "length": q, "serving": serving,
-            "counters": self.counters, "wait_s": round(self.wait_now, 1),
-            "forecast_wait_s": round(self.forecast_wait_s, 1),
-        })
+        # Internal state (and therefore alerting) updates every frame, but the
+        # queue event is only emitted about once a second — a near-identical
+        # event per frame would bloat the log for no extra information, and the
+        # dashboard only polls every 1.5s anyway.
+        if now - self._last_queue_emit >= self.emit_interval_s:
+            self._last_queue_emit = now
+            bus.emit({
+                "cam": self.cam, "type": "queue", "length": q, "serving": serving,
+                "counters": self.counters, "wait_s": round(self.wait_now, 1),
+                "forecast_wait_s": round(self.forecast_wait_s, 1),
+            })
 
     def _forecast(self, counters: int, mu: float) -> float:
         # Demo heuristic: shoppers already inside (counted at the entrance)
