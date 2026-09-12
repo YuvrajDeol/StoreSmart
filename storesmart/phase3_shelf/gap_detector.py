@@ -34,6 +34,14 @@ class GapDetector:
         self.slots = slots
         self.hsv_lower = np.array(hsv_lower, dtype=np.uint8)
         self.hsv_upper = np.array(hsv_upper, dtype=np.uint8)
+        # A slot may carry its own backdrop band: the surface behind a slot is
+        # not always the white wall (wood shelf, painted panel), and one global
+        # band can only ever match one of them.
+        self.slot_bands: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+        for s in slots:
+            if "hsv_lower" in s and "hsv_upper" in s:
+                self.slot_bands[s["slot"]] = (np.array(s["hsv_lower"], dtype=np.uint8),
+                                              np.array(s["hsv_upper"], dtype=np.uint8))
         self.empty_threshold_pct = empty_threshold_pct
         self.low_threshold_pct = low_threshold_pct
         self.confirm_frames = confirm_frames
@@ -55,7 +63,8 @@ class GapDetector:
         if roi.size == 0:
             return 0.0
         hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-        mask = cv2.inRange(hsv, self.hsv_lower, self.hsv_upper)
+        lower, upper = self.slot_bands.get(slot["slot"], (self.hsv_lower, self.hsv_upper))
+        mask = cv2.inRange(hsv, lower, upper)
         return 100.0 * float(np.count_nonzero(mask)) / mask.size
 
     def update(self, frame: np.ndarray, person_boxes: list[tuple[int, int, int, int]]) -> list[tuple[str, str]]:

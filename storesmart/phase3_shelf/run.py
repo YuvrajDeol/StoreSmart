@@ -28,6 +28,10 @@ def main():
     ap.add_argument("--headless", action="store_true")
     ap.add_argument("--duration", type=float, default=0)
     ap.add_argument("--interval", type=float, default=3.0, help="seconds between snapshots")
+    ap.add_argument("--no-person-tracker", action="store_true",
+                    help="skip YOLO person detection (no ultralytics needed). Slots blocked by a "
+                         "shopper will no longer be skipped, so only use this when nobody stands "
+                         "between the camera and the shelf.")
     args = ap.parse_args()
 
     settings = load_settings().get("shelf", {})
@@ -53,12 +57,17 @@ def main():
         source = None
         tracker = None
     else:
-        from storesmart.common.detector import PersonTracker
         from storesmart.common.video import SnapshotPoller
 
         cam_cfg = cameras.get("shelf", {})
         source = SnapshotPoller(cam_cfg["url"], interval_s=cam_cfg.get("snapshot_interval_s", args.interval))
-        tracker = PersonTracker()
+        if args.no_person_tracker:
+            tracker = None
+            print("Person tracker disabled: slots blocked by a shopper will not be skipped.")
+        else:
+            from storesmart.common.detector import PersonTracker
+
+            tracker = PersonTracker()
 
     t0 = time.time()
     print("Phase 3 shelf monitor running" + (" (simulate)" if simulate else ""))
@@ -73,8 +82,11 @@ def main():
                     print(source.last_error)
                 time.sleep(args.interval)
                 continue
-            tracks = tracker.update(frame)
-            person_boxes = [box for _, box in tracks]
+            if tracker is None:
+                person_boxes = []
+            else:
+                tracks = tracker.update(frame)
+                person_boxes = [box for _, box in tracks]
 
         changes = detector.update(frame, person_boxes)
         for slot_name, new_state in changes:

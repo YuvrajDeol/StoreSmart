@@ -21,6 +21,13 @@ def load_json(path: Path | str) -> dict[str, Any]:
         return json.load(fh)
 
 
+def save_yaml(path: Path | str, data: dict[str, Any]) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        yaml.safe_dump(data, fh, sort_keys=False)
+
+
 def save_json(path: Path | str, data: dict[str, Any]) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
