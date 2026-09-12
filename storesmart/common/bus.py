@@ -157,6 +157,37 @@ class EventBus:
                 ).fetchall()
         return [json.loads(p) for (p,) in rows]
 
+    def since_id(self, last_id: int, event_type: Optional[str] = None) -> list[tuple[int, dict]]:
+        """Events newer than `last_id`, as (row id, payload) pairs.
+
+        Prefer this over `since()` for a polling consumer. `ts` is stamped by
+        `emit()` *before* the row is inserted and committed, so a row can
+        become visible carrying a `ts` that a reader has already advanced
+        past — a timestamp cursor therefore drops events (and, depending on
+        where the cursor is taken, replays them). Row ids come from SQLite's
+        AUTOINCREMENT and become visible atomically with the commit, so an id
+        cursor delivers every event exactly once, in insert order.
+        """
+        with self._lock:
+            if event_type:
+                rows = self._conn.execute(
+                    "SELECT id, payload FROM events WHERE id > ? AND type=? ORDER BY id",
+                    (last_id, event_type),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT id, payload FROM events WHERE id > ? ORDER BY id", (last_id,)
+                ).fetchall()
+        return [(row_id, json.loads(p)) for row_id, p in rows]
+
+    def latest_id(self) -> int:
+        """Highest row id currently in the log — the seed for a `since_id`
+        cursor when a consumer should skip whatever is already there rather
+        than replay it."""
+        with self._lock:
+            row = self._conn.execute("SELECT COALESCE(MAX(id), 0) FROM events").fetchone()
+        return row[0]
+
     def close(self) -> None:
         self._conn.close()
 

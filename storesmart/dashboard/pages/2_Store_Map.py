@@ -45,26 +45,42 @@ if st.button("Save store map", type="primary"):
 
 st.subheader("3. Preview")
 COLORS = {"shelf": "#4C78A8", "door": "#54A24B", "counter": "#E45756", "camera": "#F2B701"}
-fig, ax = plt.subplots(figsize=(6, 6 * store_map.breadth_ft / max(store_map.length_ft, 1)))
-ax.set_xlim(0, store_map.length_ft)
-ax.set_ylim(0, store_map.breadth_ft)
-ax.set_aspect("equal")
-ax.invert_yaxis()
-style_axes(fig, ax)
-for r in store_map.rectangles:
-    ax.add_patch(patches.Rectangle((r.x, r.y), r.w, r.h, facecolor=COLORS.get(r.type, "gray"), alpha=0.6, edgecolor="black"))
-    ax.text(r.x + r.w / 2, r.y + r.h / 2, r.label, ha="center", va="center", fontsize=8, color=PLOT_FG)
-
+# Module scope, not inside the fragment: the fragment reruns every 1.5s and a
+# fresh EventBus each time would open a new SQLite connection 40x a minute.
 bus = EventBus()
-positions = bus.recent(limit=200, event_type="position")
-if positions:
-    xs = [p["x_ft"] for p in positions]
-    ys = [p["y_ft"] for p in positions]
-    ax.scatter(xs, ys, c="#3DDC97", s=22, zorder=5, label="anonymous dots")
-    ax.legend(loc="upper right", facecolor=PLOT_BG, edgecolor="#262C3A",
-              labelcolor=PLOT_FG, fontsize=8)
-st.pyplot(fig)
-st.caption("Dots are anonymous foot positions from Phase 2's position events — no image is shown here.")
+
+
+# ONLY the plot lives in the fragment, so the live dots repaint on their own
+# (same pattern as 1_Live.py). The shop-size inputs, the rectangle table and
+# the calibration section below stay outside it deliberately — a page-wide
+# auto-rerun would interrupt someone mid-edit in a table every 1.5 seconds.
+@fragment(run_every=1.5)
+def render_preview():
+    fig, ax = plt.subplots(figsize=(6, 6 * store_map.breadth_ft / max(store_map.length_ft, 1)))
+    ax.set_xlim(0, store_map.length_ft)
+    ax.set_ylim(0, store_map.breadth_ft)
+    ax.set_aspect("equal")
+    ax.invert_yaxis()
+    style_axes(fig, ax)
+    for r in store_map.rectangles:
+        ax.add_patch(patches.Rectangle((r.x, r.y), r.w, r.h, facecolor=COLORS.get(r.type, "gray"), alpha=0.6, edgecolor="black"))
+        ax.text(r.x + r.w / 2, r.y + r.h / 2, r.label, ha="center", va="center", fontsize=8, color=PLOT_FG)
+
+    positions = bus.recent(limit=200, event_type="position")
+    if positions:
+        xs = [p["x_ft"] for p in positions]
+        ys = [p["y_ft"] for p in positions]
+        ax.scatter(xs, ys, c="#3DDC97", s=22, zorder=5, label="anonymous dots")
+        ax.legend(loc="upper right", facecolor=PLOT_BG, edgecolor="#262C3A",
+                  labelcolor=PLOT_FG, fontsize=8)
+    st.pyplot(fig)
+    # Repainting every 1.5s would otherwise pile up pyplot's global figure
+    # registry (and trip its "more than 20 figures" warning) over a long session.
+    plt.close(fig)
+    st.caption("Dots are anonymous foot positions from Phase 2's position events — no image is shown here.")
+
+
+render_preview()
 
 st.subheader("4. Calibrate the floor camera (4-point homography)")
 st.caption(
@@ -92,3 +108,5 @@ if st.button("Compute homography"):
         st.success("Homography computed and saved.")
     except Exception as exc:
         st.error(f"Calibration failed: {exc}")
+
+autorefresh(1.5)
