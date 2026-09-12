@@ -218,6 +218,15 @@ def draw_panel(h: int, counter: EntryExitCounter | DoorwayCounter, qa: QueueAnal
         line("OPEN ANOTHER COUNTER", 0.65, (255, 255, 255), 34, 2)
     else:
         line("Status: queue under control", 0.55, (120, 220, 120), 40)
+    activity = list(getattr(counter, "activity", []))
+    line("TRACKING", 0.55, (150, 170, 190), 24)
+    if activity:
+        for entry in activity[-4:]:
+            line(entry[:40], 0.45, (200, 200, 210), 19)
+    else:
+        line("no side changes yet", 0.45, (150, 150, 160), 19)
+    y += 10
+
     line("PRIVACY", 0.55, (150, 170, 190), 26)
     line("Images written to disk: 0", 0.55, (180, 230, 210), 24)
     counts = bus.counts()

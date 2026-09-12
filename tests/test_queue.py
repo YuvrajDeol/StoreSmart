@@ -98,6 +98,45 @@ def test_entry_exit_counter_bridges_id_swap_without_phantom_crossing(tmp_path):
     assert counter.exits == 0
 
 
+def test_counts_crossing_when_track_id_swaps_mid_walk(tmp_path):
+    """The reported failure: a solo person walks across and nothing counts.
+
+    ByteTrack reassigns an ID mid-walk and the replacement appears in the very
+    next frame — while the old track is not stale yet (that takes lost_after).
+    The stale-track relinker therefore had nothing to match against at that
+    moment, so the new id looked like a brand-new person and the crossing was
+    silently dropped."""
+    bus = make_bus(tmp_path)
+    counter = EntryExitCounter(line=[[100, 0], [100, 200]], in_from=-1, buffer_px=10,
+                                lost_after=1.5)
+    # confirmed on the in_from (outside) side as track 1
+    counter.update([(1, (150, 90, 170, 110))], now=0.0, bus=bus)
+    assert counter.confirmed_side[1] == -1
+
+    # track 1 vanishes and track 2 appears the very next frame, a short walk
+    # further on — same person, no stale gap at all
+    counter.update([(2, (120, 90, 140, 110))], now=0.1, bus=bus)   # still same side, nearer line
+    counter.update([(2, (30, 90, 50, 110))], now=0.6, bus=bus)     # now clearly across
+
+    assert counter.entries == 1, f"crossing lost across the id swap: {list(counter.activity)}"
+    assert counter.exits == 0
+
+
+def test_id_swap_does_not_steal_a_still_tracked_person(tmp_path):
+    """Inheriting state must only consider tracks absent from this frame —
+    otherwise a second person standing nearby would have their side stolen."""
+    bus = make_bus(tmp_path)
+    counter = EntryExitCounter(line=[[100, 0], [100, 200]], in_from=-1, buffer_px=10)
+    # two people side by side, both confirmed on the same side
+    counter.update([(1, (150, 90, 170, 110)), (2, (155, 90, 175, 110))], now=0.0, bus=bus)
+    # a third id appears next to them while both are still tracked
+    counter.update([(1, (150, 90, 170, 110)), (2, (155, 90, 175, 110)),
+                    (3, (152, 90, 172, 110))], now=0.1, bus=bus)
+    # nobody's state was stolen: all three are independently tracked
+    assert counter.confirmed_side.keys() == {1, 2, 3}
+    assert counter.entries == 0 and counter.exits == 0
+
+
 def test_queue_alert_uses_hysteresis(tmp_path):
     bus = make_bus(tmp_path)
     queue_poly = [[0, 0], [100, 0], [100, 100], [0, 100]]
