@@ -21,9 +21,43 @@ import json
 import time
 
 
+def _http_precheck(source: str, timeout_s: float) -> dict | None:
+    """For http(s) sources, check the status code before handing the URL to
+    OpenCV — otherwise a password-protected camera just looks like a dead
+    one, which sends people hunting for network problems that don't exist."""
+    if not source.lower().startswith(("http://", "https://")):
+        return None
+    try:
+        import requests
+
+        resp = requests.get(source, timeout=min(timeout_s, 6), stream=True)
+        status = resp.status_code
+        realm = resp.headers.get("WWW-Authenticate", "")
+        resp.close()
+        if status == 401:
+            return {"ok": False, "needs_auth": True, "detail": (
+                "the camera requires a username and password"
+                + (f' ({realm})' if realm else "")
+                + ". Put them in the URL: http://USER:PASS@host:port/path — "
+                  "or turn the password off in the phone app."
+            )}
+        if status == 404:
+            return {"ok": False, "detail": f"reached the server, but path not found (404). "
+                                           f"Check the path the app shows (often /video or /live)."}
+        if status >= 500:
+            return {"ok": False, "detail": f"the camera server returned HTTP {status}"}
+    except Exception:
+        return None  # not conclusive — let OpenCV have its own try
+    return None
+
+
 def probe(source: str, timeout_s: float = 8.0) -> dict:
     if source.strip() == "simulate":
         return {"ok": True, "detail": "simulate — no camera needed"}
+
+    precheck = _http_precheck(source, timeout_s)
+    if precheck is not None:
+        return precheck
 
     import cv2
 

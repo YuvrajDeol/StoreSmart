@@ -62,6 +62,67 @@ def test_probe_bad_source_reports_failure_not_crash():
     assert result["detail"]
 
 
+def _serve(handler_cls):
+    """Run a one-off local HTTP server on a free port for probe tests."""
+    import http.server
+    import socketserver
+    import threading
+
+    socketserver.TCPServer.allow_reuse_address = True
+    server = socketserver.TCPServer(("127.0.0.1", 0), handler_cls)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"http://127.0.0.1:{server.server_address[1]}"
+
+
+def test_probe_reports_password_protected_camera_clearly():
+    """A camera behind HTTP Basic auth must be reported as needing
+    credentials — not as an unreachable camera, which sends people chasing
+    network problems that aren't there."""
+    import http.server
+
+    class Unauthorized(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.0"
+
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            self.send_response(401)
+            self.send_header("WWW-Authenticate", 'Basic realm="IP Camera for iOS"')
+            self.end_headers()
+
+    server, base = _serve(Unauthorized)
+    try:
+        result = probe(f"{base}/video", timeout_s=4)
+        assert result["ok"] is False
+        assert result.get("needs_auth") is True
+        assert "username and password" in result["detail"]
+    finally:
+        server.shutdown()
+
+
+def test_probe_reports_wrong_path_as_404():
+    import http.server
+
+    class NotFound(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.0"
+
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            self.send_response(404)
+            self.end_headers()
+
+    server, base = _serve(NotFound)
+    try:
+        result = probe(f"{base}/wrongpath", timeout_s=4)
+        assert result["ok"] is False
+        assert "404" in result["detail"]
+    finally:
+        server.shutdown()
+
+
 def test_probe_never_returns_image_data():
     """The probe reports only metadata — a frame must never leak out of it."""
     result = probe("simulate")
