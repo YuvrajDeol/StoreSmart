@@ -312,14 +312,43 @@ def main():
         doorway_cfg = load_doorway() if args.counting_mode == "doorway" else None
         line_cfg = None  # simulator's own geometry() already gives a line/in_from
     else:
-        entrance_src = open_source(cameras.get("entrance", {}))
+        entrance_cfg = dict(cameras.get("entrance", {}))
+        entrance_src = open_source(entrance_cfg)
         frame = None
         t_wait = time.time()
         while frame is None and time.time() - t_wait < 15:
             frame = entrance_src.read()
             time.sleep(0.05)
+
         if frame is None:
-            raise RuntimeError(f"cannot reach camera at {cameras['entrance']['url']} — check the hotspot")
+            # A phone's address changes whenever it moves between Wi-Fi and its
+            # own hotspot. Rather than dying mid-demo, look for it on this
+            # subnet and carry on with whatever we find.
+            configured = entrance_cfg.get("url", "")
+            print(f"Could not reach {configured} — scanning the network for the camera...")
+            from storesmart.common.camera_check import find_camera_url
+
+            discovered = find_camera_url(configured)
+            if discovered:
+                print(f"Found it at {discovered} — using that. "
+                      f"Update config/cameras.local.yaml to keep it.")
+                entrance_src.release()
+                entrance_cfg["url"] = discovered
+                entrance_src = open_source(entrance_cfg)
+                t_wait = time.time()
+                while frame is None and time.time() - t_wait < 15:
+                    frame = entrance_src.read()
+                    time.sleep(0.05)
+
+        if frame is None:
+            raise RuntimeError(
+                f"cannot reach camera at {entrance_cfg.get('url')}, and no camera server was "
+                "found on this network.\n"
+                "  - is the phone's IP-camera app open, in the foreground, with the server on?\n"
+                "  - are the Mac and the phone on the SAME network? (if the phone is the "
+                "hotspot, the Mac has to actually join it — check the Wi-Fi menu)\n"
+                "  - try: .venv/bin/python -m storesmart.common.camera_check --scan"
+            )
         h, w = frame.shape[:2]
         geom = {"queue": [[0.42, 0.38], [0.74, 0.38], [0.74, 0.62], [0.42, 0.62]],
                 "service": [[0.77, 0.28], [0.93, 0.28], [0.93, 0.72], [0.77, 0.72]]}
