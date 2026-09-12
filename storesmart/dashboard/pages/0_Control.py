@@ -197,23 +197,35 @@ for module in MODULES:
                 help="A webcam index (0, 1), a stream URL (http://IP:8080/video), "
                      "a snapshot URL (http://IP:8080/shot.jpg) or a video file path.",
             )
+            rotate = st.selectbox(
+                "Rotate image", [0, 90, 180, 270], key=f"rot_{key}",
+                index=[0, 90, 180, 270].index(int(cameras.get(role, {}).get("rotate", 0)) % 360)
+                if int(cameras.get(role, {}).get("rotate", 0)) % 360 in (0, 90, 180, 270) else 0,
+                format_func=lambda d: "No rotation" if d == 0 else f"{d}° clockwise",
+                help="A phone mounted sideways streams a rotated image, and people lying "
+                     "sideways in frame detect far worse. Saved with the source.",
+            )
+
             scol1, scol2, scol3 = st.columns([1, 1, 2])
             if scol1.button("🔌 Test source", key=f"test_{key}", use_container_width=True):
                 with st.spinner(f"Probing {source}…"):
                     st.session_state[f"probe_{key}"] = processes.probe_camera(source)
+            current_rotate = int(cameras.get(role, {}).get("rotate", 0)) % 360
+            unsaved = (source != current) or (rotate != current_rotate)
             saved_note = ""
             if scol2.button("💾 Save source", key=f"save_{key}", use_container_width=True,
-                            disabled=(source == current),
+                            disabled=not unsaved,
                             help="Writes it to config/cameras.local.yaml (gitignored)"):
                 updated = dict(cameras)
                 entry = dict(updated.get(role, {}))
                 entry["url"] = source
+                entry["rotate"] = int(rotate)
                 entry.setdefault("role", role)
                 updated[role] = entry
                 path = save_cameras_local(updated)
                 saved_note = f"Saved to {path.relative_to(REPO_ROOT)}"
-            if source != current and not saved_note:
-                scol3.caption("⚠️ Unsaved — Start uses the saved source, so save it first.")
+            if unsaved and not saved_note:
+                scol3.caption("⚠️ Unsaved — Start uses the saved settings, so save first.")
             if saved_note:
                 scol3.success(saved_note)
 
