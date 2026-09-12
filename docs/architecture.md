@@ -65,7 +65,9 @@ that happens to carry an image blob (tested explicitly in
   bus, video readers, YOLO+ByteTrack wrapper, geometry, privacy rendering,
   config loading. No phase-specific logic lives here.
 - `storesmart/phase1_footfall/` — entry/exit counting and queue analytics.
-- `storesmart/phase2_map/` — store map model, calibration, live map.
+- `storesmart/phase2_map/` — store map model (rectangles, optional
+  floor-plan background, camera facing for layout planning only),
+  calibration, live map.
 - `storesmart/phase3_shelf/` — shelf slot definitions and gap detection.
 - `storesmart/stock/` — SQLite stock/billing schema, seeding, forecast, rules.
 - `storesmart/phase4_dwell/` — zone dwell tracking, heatmap, insights.
