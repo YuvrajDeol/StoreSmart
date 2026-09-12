@@ -5,6 +5,7 @@ are never written to disk from this module.
 from __future__ import annotations
 
 import os
+import re
 import threading
 import time
 from typing import Optional
@@ -102,6 +103,116 @@ class FrameSource:
         self.cap.release()
 
 
+class MjpegStreamReader:
+    """Reads an MJPEG-over-HTTP stream with `requests` instead of OpenCV.
+
+    OpenCV delegates http:// to FFmpeg, which is fussy: it fails on some
+    phone camera apps, on URL-embedded credentials, and on slow/high-latency
+    links, giving only "couldn't read video stream" with no reason. requests
+    handles Basic auth and redirects properly and lets us control timeouts,
+    so phone cameras are far more dependable this way.
+
+    Frames are decoded in memory and only the newest is kept, matching
+    FrameSource's contract. Nothing is ever written to disk.
+    """
+
+    _SOI = b"\xff\xd8"  # JPEG start-of-image
+    _EOI = b"\xff\xd9"  # JPEG end-of-image
+    _MAX_BUFFER = 8 * 1024 * 1024
+
+    def __init__(self, url: str, proc_width: int = 960, rotate: int = 0,
+                 timeout_s: float = 15.0, reconnect_delay: float = 2.0):
+        self.url = url
+        self.proc_width = proc_width
+        self.rotate = int(rotate) % 360
+        self.timeout_s = timeout_s
+        self.reconnect_delay = reconnect_delay
+        self.frame: Optional[np.ndarray] = None
+        self.running = True
+        self.connected = False
+        self.last_error: Optional[str] = None
+        self._lock = threading.Lock()
+        threading.Thread(target=self._loop, daemon=True).start()
+
+    def _prepare(self, frame: np.ndarray) -> np.ndarray:
+        frame = rotate_frame(frame, self.rotate)
+        h, w = frame.shape[:2]
+        if w > self.proc_width:
+            frame = cv2.resize(frame, (self.proc_width, int(h * self.proc_width / w)))
+        return frame
+
+    @classmethod
+    def _take_latest_jpeg(cls, buffer: bytearray) -> Optional[bytes]:
+        """Consume complete multipart parts from `buffer`, returning the last
+        complete JPEG (or None if no part is complete yet).
+
+        Each part's own Content-Length is used rather than scanning for JPEG
+        start/end markers: phone cameras embed EXIF thumbnails, so a frame
+        contains *nested* SOI/EOI markers and marker-scanning slices out a
+        corrupt image that never decodes.
+        """
+        latest: Optional[bytes] = None
+        while True:
+            separator = buffer.find(b"\r\n\r\n")
+            if separator == -1:
+                break
+            headers = bytes(buffer[:separator])
+            match = re.search(rb"Content-Length:\s*(\d+)", headers, re.IGNORECASE)
+            if match is None:
+                del buffer[:separator + 4]  # not a part header we understand
+                continue
+            body_start = separator + 4
+            length = int(match.group(1))
+            if len(buffer) < body_start + length:
+                break  # rest of this frame hasn't arrived yet
+            latest = bytes(buffer[body_start:body_start + length])
+            del buffer[:body_start + length]
+        return latest
+
+    def _loop(self) -> None:
+        while self.running:
+            try:
+                with requests.get(self.url, stream=True, timeout=self.timeout_s) as resp:
+                    resp.raise_for_status()
+                    self.connected = True
+                    self.last_error = None
+                    buffer = bytearray()
+                    for chunk in resp.iter_content(chunk_size=16384):
+                        if not self.running:
+                            return
+                        if not chunk:
+                            continue
+                        buffer.extend(chunk)
+                        # Decode only the newest complete frame per chunk batch:
+                        # phone cameras can push far more frames than we need,
+                        # and this keeps us on the live edge instead of working
+                        # through a backlog.
+                        jpeg = self._take_latest_jpeg(buffer)
+                        if jpeg is not None:
+                            decoded = cv2.imdecode(
+                                np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+                            if decoded is not None:
+                                with self._lock:
+                                    self.frame = self._prepare(decoded)
+                        if len(buffer) > self._MAX_BUFFER:
+                            buffer.clear()  # never saw a full frame — don't grow forever
+            except Exception as exc:
+                self.connected = False
+                self.last_error = f"cannot read stream at {self.url} — {exc}"
+                time.sleep(self.reconnect_delay)
+
+    def read(self) -> Optional[np.ndarray]:
+        with self._lock:
+            return None if self.frame is None else self.frame.copy()
+
+    def release(self) -> None:
+        self.running = False
+
+    # FrameSource-compatible alias so callers can treat the two the same
+    def stop(self) -> None:
+        self.release()
+
+
 class SnapshotPoller:
     """Polls a still-image URL (e.g. IP Webcam's /shot.jpg) every `interval_s`
     seconds on a background thread. Used for the shelf camera, where a full
@@ -143,9 +254,21 @@ class SnapshotPoller:
         self.running = False
 
 
+def is_snapshot_url(url: str) -> bool:
+    return str(url).lower().split("?")[0].endswith((".jpg", ".jpeg", ".png"))
+
+
 def open_source(cam_cfg: dict, proc_width: int = 960):
-    """Build the right reader for a camera config entry from cameras.yaml."""
+    """Build the right reader for a camera config entry from cameras.yaml.
+
+    http(s) video streams go through MjpegStreamReader rather than OpenCV,
+    because FFmpeg is unreliable with phone camera apps (auth, slow links).
+    Webcam indices, files and rtsp:// still use FrameSource/OpenCV.
+    """
     url = cam_cfg.get("url", "simulate")
     if url == "simulate":
         return None
-    return FrameSource(url, proc_width=proc_width, rotate=cam_cfg.get("rotate", 0))
+    rotate = cam_cfg.get("rotate", 0)
+    if str(url).lower().startswith(("http://", "https://")) and not is_snapshot_url(url):
+        return MjpegStreamReader(url, proc_width=proc_width, rotate=rotate)
+    return FrameSource(url, proc_width=proc_width, rotate=rotate)

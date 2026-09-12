@@ -1,6 +1,50 @@
 import numpy as np
 
-from storesmart.common.video import rotate_frame
+from storesmart.common.video import MjpegStreamReader, is_snapshot_url, rotate_frame
+
+
+def _part(payload: bytes) -> bytes:
+    return b"--BoundaryString\r\nContent-type: image/jpeg\r\nContent-Length: " \
+           + str(len(payload)).encode() + b"\r\n\r\n" + payload
+
+
+def test_mjpeg_parser_extracts_a_complete_part():
+    payload = b"\xff\xd8" + b"body-bytes" + b"\xff\xd9"
+    buffer = bytearray(_part(payload))
+    assert MjpegStreamReader._take_latest_jpeg(buffer) == payload
+
+
+def test_mjpeg_parser_survives_nested_jpeg_markers():
+    """Phone cameras embed an EXIF thumbnail, so a frame contains nested
+    SOI/EOI markers. Scanning for markers slices out a corrupt image that
+    never decodes — the part's Content-Length must be used instead."""
+    thumbnail = b"\xff\xd8" + b"thumb" + b"\xff\xd9"
+    payload = b"\xff\xd8" + b"header" + thumbnail + b"real-image-data" + b"\xff\xd9"
+    buffer = bytearray(_part(payload))
+    assert MjpegStreamReader._take_latest_jpeg(buffer) == payload
+
+
+def test_mjpeg_parser_returns_the_newest_of_several_parts():
+    first = b"\xff\xd8first\xff\xd9"
+    second = b"\xff\xd8second\xff\xd9"
+    buffer = bytearray(_part(first) + _part(second))
+    assert MjpegStreamReader._take_latest_jpeg(buffer) == second
+    assert len(buffer) < 40  # both parts consumed
+
+
+def test_mjpeg_parser_waits_for_an_incomplete_part():
+    payload = b"\xff\xd8" + b"x" * 50 + b"\xff\xd9"
+    truncated = _part(payload)[:-20]
+    buffer = bytearray(truncated)
+    before = len(buffer)
+    assert MjpegStreamReader._take_latest_jpeg(buffer) is None
+    assert len(buffer) == before  # nothing consumed; wait for the rest
+
+
+def test_snapshot_urls_are_recognised():
+    assert is_snapshot_url("http://host:8080/shot.jpg") is True
+    assert is_snapshot_url("http://host:8080/shot.jpg?x=1") is True
+    assert is_snapshot_url("http://host:8081/video") is False
 
 
 def _landscape_frame():

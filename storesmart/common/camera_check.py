@@ -78,6 +78,26 @@ def probe(source: str, timeout_s: float = 8.0) -> dict:
         except Exception as exc:
             return {"ok": False, "detail": f"cannot reach {source} — {exc}"}
 
+    # http(s) video streams are read the same way the modules read them
+    # (requests, not FFmpeg), so a passing test means the real thing works.
+    if source.lower().startswith(("http://", "https://")):
+        from storesmart.common.video import MjpegStreamReader
+
+        reader = MjpegStreamReader(source, proc_width=10_000, timeout_s=timeout_s)
+        try:
+            deadline = time.time() + timeout_s
+            while time.time() < deadline:
+                frame = reader.read()
+                if frame is not None:
+                    h, w = frame.shape[:2]
+                    return {"ok": True, "detail": "stream OK",
+                            "width": int(w), "height": int(h)}
+                time.sleep(0.2)
+            return {"ok": False, "detail": reader.last_error
+                    or f"connected to {source} but no frame decoded within {timeout_s:.0f}s"}
+        finally:
+            reader.release()
+
     capture = cv2.VideoCapture(int(source) if source.isdigit() else source)
     try:
         if not capture.isOpened():
