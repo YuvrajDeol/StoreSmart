@@ -17,6 +17,7 @@ data/
 
 config/cameras.local.yaml
 config/store_map.json
+config/store_map_background.png
 config/shelf_slots.json
 config/doorway.json
 config/line.json
