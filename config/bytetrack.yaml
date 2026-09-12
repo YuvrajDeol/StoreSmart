@@ -1,0 +1,14 @@
+# Custom ByteTrack config: same defaults as Ultralytics' built-in
+# bytetrack.yaml, except track_buffer is raised from 30 to 90. That's the
+# number of frames a lost track is kept alive for possible re-matching —
+# 30 frames is only ~1-2s, which is easy to exceed with a brief occlusion
+# right at a doorway (people clustering, camera focus hiccup). 90 frames
+# gives a few more seconds of grace before the tracker gives up and would
+# assign the same physical person a new ID.
+tracker_type: bytetrack
+track_high_thresh: 0.5
+track_low_thresh: 0.1
+new_track_thresh: 0.6
+track_buffer: 90
+match_thresh: 0.8
+fuse_score: True

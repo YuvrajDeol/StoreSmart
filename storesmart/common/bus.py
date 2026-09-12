@@ -38,10 +38,13 @@ CREATE TABLE IF NOT EXISTS rejected_events (
 class EventBus:
     """Thread-safe writer/reader for the shared SQLite event log."""
 
-    def __init__(self, db_path: Path | str = DEFAULT_DB_PATH, retention_s: float = 300.0):
+    def __init__(self, db_path: Path | str = DEFAULT_DB_PATH, retention_s: float = 300.0,
+                 prune_every: int = 200):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.retention_s = retention_s
+        self.prune_every = prune_every
+        self._positions_since_prune = 0
         self._lock = threading.Lock()
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False, timeout=10)
         self._conn.execute("PRAGMA journal_mode=WAL;")
@@ -70,22 +73,20 @@ class EventBus:
                 "INSERT INTO events(ts, cam, type, payload) VALUES (?, ?, ?, ?)",
                 (time.time(), payload.get("cam"), payload["type"], json.dumps(payload)),
             )
+            # Position retention runs in the same transaction as the insert and
+            # only every `prune_every` positions. Doing it outside the lock (or
+            # without committing) would leave a write transaction open and lock
+            # the database against every other module's writer.
+            if payload["type"] == "position":
+                self._positions_since_prune += 1
+                if self._positions_since_prune >= self.prune_every:
+                    self._positions_since_prune = 0
+                    self._conn.execute(
+                        "DELETE FROM events WHERE type='position' AND ts < ?",
+                        (time.time() - self.retention_s,),
+                    )
             self._conn.commit()
-        if payload["type"] == "position":
-            self._prune_positions()
         return True
-
-    def _prune_positions(self) -> None:
-        # Must hold the lock and commit: an uncommitted DELETE leaves this
-        # connection's write transaction open, which blocks every other
-        # process writing to the bus until the next emit() happens to commit
-        # it (Phase 4 used to die with "database is locked" because of this).
-        cutoff = time.time() - self.retention_s
-        with self._lock:
-            self._conn.execute(
-                "DELETE FROM events WHERE type='position' AND ts < ?", (cutoff,)
-            )
-            self._conn.commit()
 
     def recent(self, limit: int = 50, event_type: Optional[str] = None) -> list[dict]:
         with self._lock:
@@ -99,6 +100,40 @@ class EventBus:
                     "SELECT ts, payload FROM events ORDER BY id DESC LIMIT ?", (limit,)
                 ).fetchall()
         return [json.loads(p) for _, p in rows]
+
+    def recent_with_ts(self, limit: int = 50, event_type: Optional[str] = None) -> list[tuple[float, dict]]:
+        """Like recent(), but each row keeps its wall-clock timestamp so the
+        dashboard can show relative times ("4s ago")."""
+        with self._lock:
+            if event_type:
+                rows = self._conn.execute(
+                    "SELECT ts, payload FROM events WHERE type=? ORDER BY id DESC LIMIT ?",
+                    (event_type, limit),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT ts, payload FROM events ORDER BY id DESC LIMIT ?", (limit,)
+                ).fetchall()
+        return [(ts, json.loads(p)) for ts, p in rows]
+
+    def last_ts(self, event_type: Optional[str] = None, cam: Optional[str] = None) -> Optional[float]:
+        """Wall-clock timestamp of the most recent matching event, or None.
+        Used to tell whether a module is still emitting (live) or has gone
+        quiet."""
+        query = "SELECT ts FROM events"
+        conditions, params = [], []
+        if event_type:
+            conditions.append("type=?")
+            params.append(event_type)
+        if cam:
+            conditions.append("cam=?")
+            params.append(cam)
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        query += " ORDER BY id DESC LIMIT 1"
+        with self._lock:
+            row = self._conn.execute(query, params).fetchone()
+        return row[0] if row else None
 
     def counts(self) -> dict:
         with self._lock:
