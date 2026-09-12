@@ -12,13 +12,16 @@ from typing import Optional
 
 class PersonTracker:
     def __init__(self, model_path: str = "yolov8n.pt", conf: float = 0.35,
-                 imgsz: int = 640, device: Optional[str] = None):
+                 imgsz: int = 640, device: Optional[str] = None, tracker: str = "config/bytetrack.yaml"):
         from ultralytics import YOLO  # local import: --simulate needs no torch/ultralytics
+        import os
 
+        if not os.path.exists(tracker):
+            tracker = "bytetrack.yaml"  # fall back to Ultralytics' bundled default
         self.model = YOLO(model_path)
         self.device = device or self._auto_device()
         self.track_kwargs = dict(
-            persist=True, classes=[0], tracker="bytetrack.yaml",
+            persist=True, classes=[0], tracker=tracker,
             conf=conf, imgsz=imgsz, verbose=False, device=self.device,
         )
 

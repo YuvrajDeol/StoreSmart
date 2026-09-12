@@ -19,8 +19,9 @@ footfall:
   hold_s: 3
   default_service_s: 6
   min_service_s: 1.0
-  margin_px: 12
+  buffer_px: 40  # width (px) of the no-man's-land band around the entry line
   lost_after_s: 1.5
+  max_group_size: 4  # cap on how many people one merged detection box can count as
 
 shelf:
   empty_threshold_pct: 60

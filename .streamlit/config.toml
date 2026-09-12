@@ -1,0 +1,12 @@
+# Dark theme so the dashboard looks the same on any machine during the demo.
+# Font is the OS default sans — no webfont is fetched at runtime.
+[theme]
+base = "dark"
+primaryColor = "#3DDC97"
+backgroundColor = "#0E1117"
+secondaryBackgroundColor = "#161A23"
+textColor = "#E6EAF1"
+font = "sans serif"
+
+[browser]
+gatherUsageStats = false

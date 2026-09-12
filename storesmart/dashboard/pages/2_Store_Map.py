@@ -20,6 +20,9 @@ from PIL import Image, ImageDraw, ImageFont
 from streamlit_drawable_canvas import st_canvas
 
 from storesmart.common.bus import EventBus
+from storesmart.dashboard.theme import (
+    PLOT_BG, PLOT_FG, apply_theme, page_header, style_axes,
+)
 from storesmart.dashboard.refresh import autorefresh, fragment
 from storesmart.phase2_map.calibrate import calibrate
 from storesmart.phase2_map.map_model import (
@@ -27,7 +30,9 @@ from storesmart.phase2_map.map_model import (
 )
 
 st.set_page_config(page_title="StoreSmart — Store Map", page_icon="🗺️", layout="wide")
-st.title("Store Map")
+apply_theme()
+page_header("🗺️ Store Map",
+            "Sketch the floor plan, then watch anonymous dots move on it live.")
 
 # Version guard. streamlit-drawable-canvas 0.9.3 reaches into the PRIVATE helper
 # streamlit.elements.image.image_to_url whenever a canvas background image is
@@ -713,6 +718,7 @@ def render_preview():
     ax.set_ylim(0, store_map.breadth_ft)
     ax.set_aspect("equal")
     ax.invert_yaxis()
+    style_axes(fig, ax)
 
     preview_bg = _background_pil()
     if preview_bg is not None:
@@ -722,7 +728,8 @@ def render_preview():
 
     for r in store_map.rectangles:
         ax.add_patch(patches.Rectangle((r.x, r.y), r.w, r.h, facecolor=COLORS.get(r.type, "gray"), alpha=0.6, edgecolor="black"))
-        ax.text(r.x + r.w / 2, r.y + r.h / 2, r.label, ha="center", va="center", fontsize=8)
+        ax.text(r.x + r.w / 2, r.y + r.h / 2, r.label, ha="center", va="center", fontsize=8,
+                color=PLOT_FG)
         if r.type == "camera" and r.facing_deg is not None:
             cx, cy = r.x + r.w / 2, r.y + r.h / 2
             reach = max(store_map.length_ft, store_map.breadth_ft) * 0.18
@@ -754,9 +761,10 @@ def render_preview():
     if latest_by_track:
         xs = [p["x_ft"] for p in latest_by_track.values()]
         ys = [p["y_ft"] for p in latest_by_track.values()]
-        ax.scatter(xs, ys, c="black", s=40, zorder=5,
+        ax.scatter(xs, ys, c="#3DDC97", s=40, zorder=5,
                    label=f"{len(latest_by_track)} anonymous dot(s)")
-        ax.legend(loc="upper right")
+        ax.legend(loc="upper right", facecolor=PLOT_BG, edgecolor="#262C3A",
+                  labelcolor=PLOT_FG, fontsize=8)
     st.pyplot(fig)
     # Repainting every 1.5s would otherwise pile up pyplot's global figure
     # registry (and trip its "more than 20 figures" warning) over a long session.

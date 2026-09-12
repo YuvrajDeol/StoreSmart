@@ -33,6 +33,17 @@ def _scale(pts_norm, w, h):
     return [[x * w, y * h] for x, y in pts_norm]
 
 
+def _ask(prompt: str, default: str = "") -> str:
+    """input() that survives having no stdin — when the module is launched
+    from the dashboard rather than a terminal, fall back to the default
+    instead of crashing on EOF."""
+    try:
+        return input(prompt).strip() or default
+    except (EOFError, OSError):
+        print(f"{prompt}{default}  (no terminal attached, using default)")
+        return default
+
+
 def _txt(img, s, org, scale=0.55, color=(235, 235, 235), thick=1):
     cv2.putText(img, s, (org[0] + 1, org[1] + 1), cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), thick + 1, cv2.LINE_AA)
     cv2.putText(img, s, org, cv2.FONT_HERSHEY_SIMPLEX, scale, color, thick, cv2.LINE_AA)
@@ -73,8 +84,8 @@ def run_doorway_setup(get_frame) -> dict | None:
     w, h = size
     rect_norm = {"x": x1 / w, "y": y1 / h, "w": (x2 - x1) / w, "h": (y2 - y1) / h}
 
-    in_label = input("Label for INSIDE the rectangle [Inside]: ").strip() or "Inside"
-    out_label = input("Label for OUTSIDE the rectangle [Outside]: ").strip() or "Outside"
+    in_label = _ask("Label for INSIDE the rectangle [Inside]: ", "Inside")
+    out_label = _ask("Label for OUTSIDE the rectangle [Outside]: ", "Outside")
     return {"rect": rect_norm, "in_label": in_label, "out_label": out_label}
 
 
@@ -126,8 +137,8 @@ def run_line_setup(get_frame) -> dict | None:
     w, h = size
     line_norm = [[x / w, y / h] for x, y in line_px]
 
-    in_label = input("Label for INSIDE the store [Inside]: ").strip() or "Inside"
-    out_label = input("Label for OUTSIDE the store [Outside]: ").strip() or "Outside"
+    in_label = _ask("Label for INSIDE the store [Inside]: ", "Inside")
+    out_label = _ask("Label for OUTSIDE the store [Outside]: ", "Outside")
     return {"line": line_norm, "in_from": in_from, "in_label": in_label, "out_label": out_label}
 
 
@@ -192,6 +203,9 @@ def main():
                           "entering it counts as IN, leaving it counts as OUT.")
     ap.add_argument("--doorway-config", default=None, help="override path to the doorway rectangle config")
     ap.add_argument("--line-config", default=None, help="override path to the entry line config")
+    ap.add_argument("--initial-inside", type=int, default=None,
+                     help="how many people are already inside the store at startup "
+                          "(skips the interactive prompt; useful for --headless/--simulate runs)")
     args = ap.parse_args()
 
     settings = load_settings().get("footfall", {})
@@ -200,6 +214,18 @@ def main():
     simulate = args.simulate or cameras.get("entrance", {}).get("url", "simulate") == "simulate"
     doorway_path = args.doorway_config or "config/doorway.json"
     line_path = args.line_config or "config/line.json"
+
+    initial_inside = args.initial_inside
+    if initial_inside is None:
+        if args.headless or simulate:
+            initial_inside = 0
+        else:
+            raw = _ask("How many people are already inside the store right now? [0]: ", "0")
+            try:
+                initial_inside = int(raw) if raw else 0
+            except ValueError:
+                print("Not a number, assuming 0.")
+                initial_inside = 0
 
     if not args.headless:
         cv2.namedWindow(WIN, cv2.WINDOW_NORMAL)
@@ -251,22 +277,26 @@ def main():
                     return
                 save_line_config(line_cfg, line_path)
 
+    max_group_size = settings.get("max_group_size", 4)
     if args.counting_mode == "doorway":
         counter = DoorwayCounter(
             rect=scale_rect(doorway_cfg["rect"], w, h),
             in_label=doorway_cfg.get("in_label", "Inside"), out_label=doorway_cfg.get("out_label", "Outside"),
             lost_after=settings.get("lost_after_s", 1.5),
+            initial_inside=initial_inside, max_group_size=max_group_size,
         )
     elif line_cfg is not None:
         counter = EntryExitCounter(
             line=_scale(line_cfg["line"], w, h), in_from=line_cfg["in_from"],
-            margin=settings.get("margin_px", 12), lost_after=settings.get("lost_after_s", 1.5),
+            buffer_px=settings.get("buffer_px", 40), lost_after=settings.get("lost_after_s", 1.5),
             in_label=line_cfg.get("in_label", "Inside"), out_label=line_cfg.get("out_label", "Outside"),
+            initial_inside=initial_inside, max_group_size=max_group_size,
         )
     else:
         counter = EntryExitCounter(
             line=_scale(geom["line"], w, h), in_from=geom["in_from"],
-            margin=settings.get("margin_px", 12), lost_after=settings.get("lost_after_s", 1.5),
+            buffer_px=settings.get("buffer_px", 40), lost_after=settings.get("lost_after_s", 1.5),
+            initial_inside=initial_inside, max_group_size=max_group_size,
         )
     qa = QueueAnalyzer(
         queue_poly=_scale(geom["queue"], w, h) if geom.get("queue") else None,
@@ -338,6 +368,11 @@ def main():
                 qa.set_counters(qa.counters - 1)
             elif k == ord("f") and isinstance(counter, EntryExitCounter):
                 counter.flip_direction()
+        elif simulate:
+            # Windowed mode is paced by cv2.waitKey; headless simulate has no
+            # such pause, so without this the loop spins the CPU flat out and
+            # runs simulated time ~100x too fast.
+            time.sleep(max(0.0, dt_sim - (time.time() - tnow)))
 
         if args.duration and now >= args.duration:
             break

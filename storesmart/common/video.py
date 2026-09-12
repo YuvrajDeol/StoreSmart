@@ -14,15 +14,37 @@ import numpy as np
 import requests
 
 
+#: cv2 rotation codes by degrees clockwise.
+_ROTATIONS = {
+    90: cv2.ROTATE_90_CLOCKWISE,
+    180: cv2.ROTATE_180,
+    270: cv2.ROTATE_90_COUNTERCLOCKWISE,
+}
+
+
+def rotate_frame(frame: np.ndarray, degrees: int) -> np.ndarray:
+    """Rotate clockwise by 0/90/180/270 degrees.
+
+    A phone mounted sideways to watch a doorway streams a rotated image, and
+    YOLO is trained on upright people — a person lying sideways in frame
+    detects far worse. Rotating on input fixes detection everywhere
+    downstream, since every module sees the corrected frame.
+    """
+    code = _ROTATIONS.get(int(degrees) % 360)
+    return frame if code is None else cv2.rotate(frame, code)
+
+
 class FrameSource:
     """Live streams: a background thread always holds only the newest frame,
     so processing never falls behind (no buffer build-up). Video files are
     read frame by frame instead. Reconnects automatically on failure."""
 
-    def __init__(self, src, proc_width: int = 960, reconnect_delay: float = 2.0):
+    def __init__(self, src, proc_width: int = 960, reconnect_delay: float = 2.0,
+                 rotate: int = 0):
         self.src = src
         self.proc_width = proc_width
         self.reconnect_delay = reconnect_delay
+        self.rotate = int(rotate) % 360
         self.is_file = isinstance(src, str) and os.path.isfile(src)
         self.frame: Optional[np.ndarray] = None
         self.running = True
@@ -42,6 +64,8 @@ class FrameSource:
         return cap
 
     def _resize(self, frame: np.ndarray) -> np.ndarray:
+        # rotate first, so proc_width caps the width of the upright image
+        frame = rotate_frame(frame, self.rotate)
         h, w = frame.shape[:2]
         if w > self.proc_width:
             frame = cv2.resize(frame, (self.proc_width, int(h * self.proc_width / w)))
@@ -83,10 +107,12 @@ class SnapshotPoller:
     seconds on a background thread. Used for the shelf camera, where a full
     video stream isn't needed."""
 
-    def __init__(self, url: str, interval_s: float = 3.0, timeout_s: float = 5.0):
+    def __init__(self, url: str, interval_s: float = 3.0, timeout_s: float = 5.0,
+                 rotate: int = 0):
         self.url = url
         self.interval_s = interval_s
         self.timeout_s = timeout_s
+        self.rotate = int(rotate) % 360
         self.frame: Optional[np.ndarray] = None
         self.last_error: Optional[str] = None
         self.running = True
@@ -101,6 +127,7 @@ class SnapshotPoller:
                 arr = np.frombuffer(resp.content, dtype=np.uint8)
                 frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
                 if frame is not None:
+                    frame = rotate_frame(frame, self.rotate)
                     with self._lock:
                         self.frame = frame
                     self.last_error = None
@@ -121,4 +148,4 @@ def open_source(cam_cfg: dict, proc_width: int = 960):
     url = cam_cfg.get("url", "simulate")
     if url == "simulate":
         return None
-    return FrameSource(url, proc_width=proc_width)
+    return FrameSource(url, proc_width=proc_width, rotate=cam_cfg.get("rotate", 0))

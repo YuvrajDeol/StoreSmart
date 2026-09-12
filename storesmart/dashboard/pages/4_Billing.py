@@ -2,11 +2,13 @@
 stock and writes a sales row."""
 import streamlit as st
 
+from storesmart.dashboard.theme import apply_theme, page_header
 from storesmart.stock.db import get_connection, get_items, record_sale
 
 st.set_page_config(page_title="StoreSmart — Billing", page_icon="🧾", layout="wide")
-st.title("Billing")
-st.caption("Simulated point-of-sale for the demo — sales history in the DB is seeded synthetic data.")
+apply_theme()
+page_header("🧾 Billing",
+            "Simulated point of sale — each sale decrements shelf stock and feeds the forecast")
 
 conn = get_connection()
 items = get_items(conn)

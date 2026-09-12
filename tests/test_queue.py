@@ -7,23 +7,94 @@ def make_bus(tmp_path):
     return EventBus(db_path=tmp_path / "test.db")
 
 
-def test_entry_exit_counter_counts_crossing(tmp_path):
+def test_entry_exit_counter_counts_full_crossing(tmp_path):
     bus = make_bus(tmp_path)
-    counter = EntryExitCounter(line=[[100, 0], [100, 200]], in_from=-1, margin=5)
-    # track starts on the "in_from" side, then crosses to the other side
-    counter.update([(1, (150, 90, 170, 110))], now=0.0, bus=bus)
-    counter.update([(1, (30, 90, 50, 110))], now=1.0, bus=bus)
+    counter = EntryExitCounter(line=[[100, 0], [100, 200]], in_from=-1, buffer_px=10)
+    # track starts confirmed on the "in_from" side, then crosses fully through
+    # the buffer to the other side
+    counter.update([(1, (150, 90, 170, 110))], now=0.0, bus=bus)  # x=160, clearly right of line
+    counter.update([(1, (30, 90, 50, 110))], now=1.0, bus=bus)    # x=40, clearly left of line
     assert counter.entries == 1
     assert counter.exits == 0
     assert counter.inside == 1
 
 
-def test_entry_exit_counter_ignores_margin_jitter(tmp_path):
+def test_entry_exit_counter_ignores_buffer_jitter(tmp_path):
     bus = make_bus(tmp_path)
-    counter = EntryExitCounter(line=[[100, 0], [100, 200]], in_from=1, margin=20)
-    counter.update([(1, (150, 90, 170, 110))], now=0.0, bus=bus)
-    counter.update([(1, (95, 90, 105, 110))], now=1.0, bus=bus)  # within dead-band
+    counter = EntryExitCounter(line=[[100, 0], [100, 200]], in_from=1, buffer_px=20)
+    counter.update([(1, (150, 90, 170, 110))], now=0.0, bus=bus)  # x=160, confirmed right
+    counter.update([(1, (95, 90, 105, 110))], now=1.0, bus=bus)   # x=100, inside the buffer band
     assert counter.entries == 0
+    assert counter.exits == 0
+
+
+def test_entry_exit_counter_ignores_repeated_jitter_near_line(tmp_path):
+    """A person lingering right at the line shouldn't get counted repeatedly
+    just because detection noise nudges them a few pixels each frame — this
+    is the bug the buffer zone exists to prevent."""
+    bus = make_bus(tmp_path)
+    counter = EntryExitCounter(line=[[100, 0], [100, 200]], in_from=1, buffer_px=20)
+    counter.update([(1, (150, 90, 170, 110))], now=0.0, bus=bus)  # x=160, confirmed right
+    for i, x in enumerate([95, 105, 98, 102, 96, 104]):  # noisy wobble, all inside the buffer
+        counter.update([(1, (x, 90, x + 20, 110))], now=1.0 + i, bus=bus)
+    assert counter.entries == 0
+    assert counter.exits == 0
+
+
+def test_entry_exit_counter_initial_inside_baseline(tmp_path):
+    """Someone already in the store when the system starts, then leaving,
+    should decrement from the seeded baseline rather than making the OUT
+    count outrun IN with the inside total stuck at 0."""
+    bus = make_bus(tmp_path)
+    counter = EntryExitCounter(line=[[100, 0], [100, 200]], in_from=1, buffer_px=10,
+                                initial_inside=3)
+    assert counter.inside == 3
+    counter.update([(1, (150, 90, 170, 110))], now=0.0, bus=bus)  # confirmed right (in_from side)
+    counter.update([(1, (30, 90, 50, 110))], now=1.0, bus=bus)    # crosses left -> exit
+    assert counter.exits == 1
+    assert counter.entries == 0
+    assert counter.inside == 2  # 3 - 1, not clamped to 0
+
+
+def test_entry_exit_counter_wide_box_counts_as_two_people(tmp_path):
+    bus = make_bus(tmp_path)
+    counter = EntryExitCounter(line=[[100, 0], [100, 200]], in_from=-1, buffer_px=5)
+    # calibrate the single-person baseline first (needs a handful of samples
+    # before the group-size ratio check kicks in — see GroupSizeEstimator)
+    for tid in range(5):
+        x = 150 + tid  # vary track id/position slightly, same ~20px width each time
+        counter.update([(tid, (x, 90, x + 20, 110))], now=tid * 2.0, bus=bus)       # confirmed right
+        counter.update([(tid, (x - 120, 90, x - 100, 110))], now=tid * 2.0 + 1, bus=bus)  # crosses -> 1 entry
+    assert counter.entries == 5
+    # now a much wider box (two people merged) crosses the same way
+    counter.update([(99, (150, 90, 190, 110))], now=20.0, bus=bus)   # width 40, confirmed right
+    counter.update([(99, (10, 90, 50, 110))], now=21.0, bus=bus)     # width 40, crosses -> should count as 2
+    assert counter.entries == 7  # 5 (singles) + 2 (merged pair)
+
+
+def test_entry_exit_counter_bridges_id_swap_without_phantom_crossing(tmp_path):
+    """Regression test for the reported bug: ByteTrack drops a track ID
+    during a brief occlusion right at the doorway and reassigns a new ID to
+    the same physical person. Without relinking, the new ID's first sighting
+    (already confirmed on one side) would look like a fresh person and the
+    very next frame's tiny position update could look like a "crossing" —
+    inflating the count with a phantom person who never actually walked
+    through the line."""
+    bus = make_bus(tmp_path)
+    counter = EntryExitCounter(line=[[100, 0], [100, 200]], in_from=-1, buffer_px=10, lost_after=0.5)
+    # track 1: confirmed on the right (outside) side, then lost (occluded)
+    counter.update([(1, (150, 90, 170, 110))], now=0.0, bus=bus)
+    # track 1 goes stale (not seen for > lost_after) — simulate by advancing
+    # time with no detections at all
+    counter.update([], now=1.0, bus=bus)
+    # a new track ID appears a moment later, at essentially the same spot —
+    # this must be recognized as the same person, not a fresh sighting
+    counter.update([(2, (152, 90, 172, 110))], now=1.2, bus=bus)
+    assert counter.entries == 0
+    assert counter.exits == 0
+    # now that (relinked) person actually crosses to the inside
+    counter.update([(2, (30, 90, 50, 110))], now=2.0, bus=bus)
+    assert counter.entries == 1
     assert counter.exits == 0
 
 

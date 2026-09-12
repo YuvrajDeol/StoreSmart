@@ -5,33 +5,47 @@ import datetime
 import pandas as pd
 import streamlit as st
 
+import html
+
 from storesmart.common.bus import EventBus
+from storesmart.dashboard import data
 from storesmart.dashboard.refresh import autorefresh, fragment
+from storesmart.dashboard.theme import alert_html, apply_theme, card, kpi_grid, page_header
 from storesmart.stock.db import get_connection, get_items
 from storesmart.stock.forecast import forecast_run_out
 
 st.set_page_config(page_title="StoreSmart — Shelves & Stock", page_icon="📦", layout="wide")
-st.title("Shelves & Stock")
+apply_theme()
+page_header("📦 Shelves & Stock",
+            "Shelf gaps from the camera, combined with the stock and billing database")
 
 bus = EventBus()
 conn = get_connection()
 
-STATE_COLOR = {"ok": "🟢", "low": "🟡", "empty": "🔴"}
-
 
 @fragment(run_every=2.0)
 def render():
-    st.subheader("Shelf slots")
-    shelf_events = bus.recent(limit=100, event_type="shelf_status")
-    latest_by_slot: dict[str, dict] = {}
-    for ev in reversed(shelf_events):
-        latest_by_slot[ev["slot"]] = ev
-    if latest_by_slot:
-        cols = st.columns(len(latest_by_slot))
-        for col, (slot, ev) in zip(cols, sorted(latest_by_slot.items())):
-            col.metric(f"{STATE_COLOR.get(ev['state'], '⚪')} {slot}", f"{ev['fill_pct']:.0f}% backdrop", ev["state"])
+    slots = data.shelf_slots(bus)
+    if slots:
+        by_state = {}
+        for ev in slots.values():
+            by_state[ev.get("state")] = by_state.get(ev.get("state"), 0) + 1
+        kpi_grid([
+            {"label": "Slots watched", "value": len(slots), "tone": "info"},
+            {"label": "Stocked · भरा", "value": by_state.get("ok", 0), "tone": "good"},
+            {"label": "Running low", "value": by_state.get("low", 0), "tone": "warn"},
+            {"label": "Empty · खाली", "value": by_state.get("empty", 0), "tone": "bad"},
+        ], cols=4)
+        chips = "".join(
+            f'<div class="ss-chip {html.escape(ev.get("state", "ok"))}">'
+            f'<div class="s">{html.escape(slot)}</div>'
+            f'<div class="p">{ev.get("state")} · {ev.get("fill_pct", 0):.0f}%</div></div>'
+            for slot, ev in sorted(slots.items())
+        )
+        card("Slot grid", f'<div class="ss-chips">{chips}</div>')
     else:
-        st.info("No shelf snapshots yet — start Phase 3 (`make sim` or `python -m storesmart.phase3_shelf.run --simulate`).")
+        st.info("No shelf snapshots yet — start Phase 3 (`make sim` or "
+                "`python -m storesmart.phase3_shelf.run --simulate`).")
 
     st.subheader("Items")
     rows = []
@@ -50,10 +64,16 @@ def render():
     st.caption("Sales history used for the forecast is simulated (seeded demo data), not real POS data.")
 
     st.subheader("Refill / Reorder / Mismatch alerts")
-    for kind, label in (("refill", "🔵 Refill"), ("reorder", "🟠 Reorder"), ("mismatch", "🔴 Mismatch")):
-        alerts = [a for a in bus.recent(limit=50, event_type="alert") if a.get("kind") == kind]
-        for a in alerts[:5]:
-            st.write(f"{label}: {a['msg']}")
+    stock_alerts = [a for a in data.active_alerts(bus, limit=9, per_kind=3)
+                    if a.get("kind") in ("refill", "reorder", "mismatch")]
+    if stock_alerts:
+        st.markdown(
+            "".join(alert_html(a.get("kind", ""), a.get("msg", ""), a.get("severity", "warn"))
+                    for a in stock_alerts),
+            unsafe_allow_html=True,
+        )
+    else:
+        st.success("No refill, reorder or mismatch alerts right now.")
 
 
 render()

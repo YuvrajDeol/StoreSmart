@@ -9,12 +9,15 @@ from storesmart.common.bus import EventBus
 from storesmart.common.config import load_settings
 from storesmart.dashboard.refresh import autorefresh, fragment
 from storesmart.phase2_map.map_model import load_map
+from storesmart.dashboard.theme import PLOT_FG, apply_theme, page_header, style_axes
 from storesmart.phase4_dwell.heatmap import build_heatmap
 from storesmart.phase4_dwell.insights import compute_insights
 from storesmart.stock.db import get_connection
 
 st.set_page_config(page_title="StoreSmart — Dwell & Insights", page_icon="🔥", layout="wide")
-st.title("Dwell & Insights")
+apply_theme()
+page_header("🔥 Dwell & Insights",
+            "Time spent per zone, an occupancy heatmap, and rule-based layout suggestions")
 
 bus = EventBus()
 conn = get_connection()
@@ -37,10 +40,11 @@ def render():
         ax.set_ylim(0, store_map.breadth_ft)
         ax.invert_yaxis()
         ax.set_aspect("equal")
+        style_axes(fig, ax)
         for shelf in store_map.shelves():
             ax.add_patch(patches.Rectangle((shelf.x, shelf.y), shelf.w, shelf.h,
-                                             facecolor="none", edgecolor="black"))
-            ax.text(shelf.x + shelf.w / 2, shelf.y + shelf.h / 2, shelf.label, ha="center", fontsize=7)
+                                             facecolor="none", edgecolor="#4A5468"))
+            ax.text(shelf.x + shelf.w / 2, shelf.y + shelf.h / 2, shelf.label, ha="center", fontsize=7, color=PLOT_FG)
         if cells:
             xs = [c[0] for c in cells]
             ys = [c[1] for c in cells]
