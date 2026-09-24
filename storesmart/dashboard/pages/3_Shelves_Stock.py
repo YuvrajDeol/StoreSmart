@@ -47,23 +47,10 @@ def render():
         st.info("No shelf snapshots yet — start Phase 3 (`make sim` or "
                 "`python -m storesmart.phase3_shelf.run --simulate`).")
 
-    st.subheader("Items")
-    rows = []
-    today = datetime.date.today()
-    for item in get_items(conn):
-        forecast = forecast_run_out(conn, dict(item), today=today)
-        rows.append({
-            "Item": item["name"], "Category": item["category"], "Slot": item["slot"],
-            "Shelf qty": item["shelf_qty"], "Store qty": item["store_qty"],
-            "Avg daily demand": forecast.avg_daily_demand, "Days left": forecast.days_left,
-            "Supplier": item["supplier"], "Next visit": forecast.next_supplier_visit.isoformat(),
-            "Order by": forecast.order_by.isoformat(),
-            "Run-out risk": "⚠️ before next visit" if forecast.will_run_out_before_visit else "ok",
-        })
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, height=380)
-    st.caption("Sales history used for the forecast is simulated (seeded demo data), not real POS data.")
-
-    st.subheader("Refill / Reorder / Mismatch alerts")
+    # Alerts sit above the table deliberately: "refill this from the
+    # storeroom" / "order this by Monday" is what someone acts on, while the
+    # table is the evidence behind it.
+    st.subheader("What to do about it")
     stock_alerts = [a for a in data.active_alerts(bus, limit=9, per_kind=3)
                     if a.get("kind") in ("refill", "reorder", "mismatch")]
     if stock_alerts:
@@ -74,6 +61,23 @@ def render():
         )
     else:
         st.success("No refill, reorder or mismatch alerts right now.")
+
+    with st.expander("Items, forecasts and supplier dates", expanded=False):
+        rows = []
+        today = datetime.date.today()
+        for item in get_items(conn):
+            forecast = forecast_run_out(conn, dict(item), today=today)
+            rows.append({
+                "Item": item["name"], "Category": item["category"], "Slot": item["slot"],
+                "Shelf qty": item["shelf_qty"], "Store qty": item["store_qty"],
+                "Avg daily demand": forecast.avg_daily_demand, "Days left": forecast.days_left,
+                "Supplier": item["supplier"], "Next visit": forecast.next_supplier_visit.isoformat(),
+                "Order by": forecast.order_by.isoformat(),
+                "Run-out risk": "⚠️ before next visit" if forecast.will_run_out_before_visit else "ok",
+            })
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, height=380)
+        st.caption("Sales history used for the forecast is simulated (seeded demo data), "
+                   "not real POS data.")
 
 
 render()

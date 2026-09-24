@@ -95,20 +95,30 @@ SEVERITY_RANK = {"urgent": 0, "warn": 1, "info": 2}
 
 def active_alerts(bus: EventBus, limit: int = 6, per_kind: int = 2) -> list[dict]:
     """Most recent alerts, deduplicated per (kind, item) and capped at
-    `per_kind` of any one kind — otherwise a run of, say, stock mismatches
-    crowds every other alert type off the panel. Most severe first."""
+    `per_kind` of any one kind.
+
+    Ordering takes one of each kind before a second of any — a run of stock
+    mismatches would otherwise fill the panel and hide the fact that there is
+    also something to refill and something to reorder, which are different
+    jobs for different people. Within that, most severe first.
+    """
     seen: set = set()
-    by_kind: dict[str, int] = {}
-    out = []
+    grouped: dict[str, list[dict]] = {}
     for event in bus.recent(limit=80, event_type="alert"):
         kind = event.get("kind")
         key = (kind, event.get("item"))
-        if key in seen or by_kind.get(kind, 0) >= per_kind:
+        if key in seen or len(grouped.get(kind, [])) >= per_kind:
             continue
         seen.add(key)
-        by_kind[kind] = by_kind.get(kind, 0) + 1
-        out.append(event)
-    out.sort(key=lambda e: SEVERITY_RANK.get(e.get("severity", "info"), 3))
+        grouped.setdefault(kind, []).append(event)
+
+    kinds = sorted(grouped, key=lambda k: SEVERITY_RANK.get(
+        grouped[k][0].get("severity", "info"), 3))
+    out: list[dict] = []
+    for rank in range(per_kind):                 # one of each kind, then seconds
+        for kind in kinds:
+            if rank < len(grouped[kind]):
+                out.append(grouped[kind][rank])
     return out[:limit]
 
 
