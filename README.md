@@ -186,14 +186,6 @@ docs/           architecture, event contract, demo script
 data/           gitignored — SQLite DB lives here
 ```
 
-## Team / credits
-
-- Team: _TBD_
-- Members:
-  - Divas Bansal — Phase 3 (Shelf gaps + stock):
-    [standalone repo](https://github.com/divasbansal956-spec/storesmart-shelf-gap-detection)
-  - _other members TBD_
-
 ## License
 
 MIT — see [LICENSE](LICENSE).
