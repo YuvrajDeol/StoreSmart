@@ -67,6 +67,7 @@ isn't blocking incoming connections from the phone's IP.
    white-backdrop HSV threshold, and combine that with a SQLite stock DB for
    refill-from-storeroom vs order-from-distributor reminders, run-out
    forecasts, and stock-mismatch alerts.
+   ([standalone write-up of this module](https://github.com/divasbansal956-spec/storesmart-shelf-gap-detection))
 4. **Dwell zones & layout insights** — time spent per map zone, a heatmap,
    and rule-based suggestions combining dwell with sales per category.
 
@@ -146,6 +147,8 @@ data/           gitignored — SQLite DB lives here
 
 - Team: _add your team name here_
 - Members: _add names here_
+  - Divas Bansal — Phase 3 (Shelf gaps + stock):
+    [standalone repo](https://github.com/divasbansal956-spec/storesmart-shelf-gap-detection)
 
 ## License
 
