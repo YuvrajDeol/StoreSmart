@@ -188,10 +188,11 @@ data/           gitignored — SQLite DB lives here
 
 ## Team / credits
 
-- Team: _add your team name here_
-- Members: _add names here_
+- Team: _TBD_
+- Members:
   - Divas Bansal — Phase 3 (Shelf gaps + stock):
     [standalone repo](https://github.com/divasbansal956-spec/storesmart-shelf-gap-detection)
+  - _other members TBD_
 
 ## License
 
