@@ -5,6 +5,17 @@
 Built for Smart India Hackathon 2026, problem statement **SIH26179** (Qualcomm:
 edge-AI retail intelligence).
 
+> **Phase 3 — Shelf Auto-Calibration**
+> Individual contribution by Divas Bansal.
+> This branch contains the Phase 3 implementation (shelf gap detection +
+> stock alerts, plus the auto-calibration tooling) developed as part of the
+> StoreSmart team project.
+>
+> - For a clean, standalone presentation of this contribution:
+>   → [Shelf Gap Detection & Stock Alerts](https://github.com/divasbansal956-spec/storesmart-shelf-gap-detection)
+> - For the complete team project:
+>   → [StoreSmart](https://github.com/YuvrajDeol/StoreSmart)
+
 ## The problem, the solution
 
 Small and mid-size retail stores have CCTV but no way to turn it into
