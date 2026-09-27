@@ -1,20 +1,23 @@
 # StoreSmart
 
+---
+
+## 🧩 You are viewing: `feat/phase3-shelf-auto-calibration`
+
+**Phase 3 — Shelf Auto-Calibration**, an individual contribution by
+**Divas Bansal** within this team project.
+
+| | |
+|---|---|
+| 🔗 **Standalone presentation of this work** | [Shelf Gap Detection & Stock Alerts](https://github.com/divasbansal956-spec/storesmart-shelf-gap-detection) |
+| 🔗 **Complete team project (main branch)** | [StoreSmart](https://github.com/YuvrajDeol/StoreSmart) |
+
+---
+
 **Privacy-first, real-time store intelligence from a store's existing cameras — no frame is ever stored or sent.**
 
 Built for Smart India Hackathon 2026, problem statement **SIH26179** (Qualcomm:
 edge-AI retail intelligence).
-
-> **Phase 3 — Shelf Auto-Calibration**
-> Individual contribution by Divas Bansal.
-> This branch contains the Phase 3 implementation (shelf gap detection +
-> stock alerts, plus the auto-calibration tooling) developed as part of the
-> StoreSmart team project.
->
-> - For a clean, standalone presentation of this contribution:
->   → [Shelf Gap Detection & Stock Alerts](https://github.com/divasbansal956-spec/storesmart-shelf-gap-detection)
-> - For the complete team project:
->   → [StoreSmart](https://github.com/YuvrajDeol/StoreSmart)
 
 ## The problem, the solution
 
