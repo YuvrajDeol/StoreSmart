@@ -20,7 +20,7 @@ from storesmart.common.bus import EventBus
 from storesmart.common.config import load_cameras, load_settings
 from storesmart.common.privacy import VIEWS, render_blurred, render_raw, render_zero_frame
 from storesmart.common.video import open_source
-from storesmart.common.geometry import side_of_line
+from storesmart.common.geometry import point_in_rect, side_of_line, signed_distance
 from storesmart.phase1_footfall.counter import EntryExitCounter, load_line_config, save_line_config
 from storesmart.phase1_footfall.doorway import DoorwayCounter, load_doorway, save_doorway, scale_rect
 from storesmart.phase1_footfall.queue import QueueAnalyzer
@@ -143,20 +143,82 @@ def run_line_setup(get_frame) -> dict | None:
 
 
 def draw_line_overlay(img, counter: EntryExitCounter) -> None:
-    ax, ay = (int(v) for v in counter.line[0])
-    bx, by = (int(v) for v in counter.line[1])
-    cv2.line(img, (ax, ay), (bx, by), (0, 220, 255), 3)
-    mx, my = (ax + bx) // 2, (ay + by) // 2
-    nx, ny = (by - ay), -(bx - ax)
-    norm = (nx ** 2 + ny ** 2) ** 0.5 + 1e-6
-    offset = 40
-    p1 = (int(mx + nx / norm * offset), int(my + ny / norm * offset))
-    p2 = (int(mx - nx / norm * offset), int(my - ny / norm * offset))
-    side1 = side_of_line(counter.line, p1, margin=0)
-    label1, label2 = (counter.out_label, counter.in_label) if side1 == counter.in_from \
-        else (counter.in_label, counter.out_label)
-    _txt(img, label1, p1, 0.55, (150, 200, 255), 2)
-    _txt(img, label2, p2, 0.55, (0, 220, 255), 2)
+    """Draw the entry line, its buffer band, and which side is which.
+
+    Two things here matter for getting a setup right. The line is drawn
+    extended across the whole frame, because the counter treats it as
+    infinite — drawing only the clicked segment made people think walking
+    around its end avoided it. And the buffer band is drawn explicitly: a
+    crossing only counts once a foot point is clear of that band on both
+    sides in turn, so it has to be obvious how much room that needs.
+    """
+    h, w = img.shape[:2]
+    (ax, ay), (bx, by) = counter.line
+    dx, dy = bx - ax, by - ay
+    length = (dx * dx + dy * dy) ** 0.5 + 1e-6
+    ux, uy = dx / length, dy / length          # along the line
+    nx, ny = -uy, ux                           # perpendicular to it
+
+    def extended(offset: float):
+        far = max(w, h) * 2
+        cx, cy = (ax + bx) / 2 + nx * offset, (ay + by) / 2 + ny * offset
+        return ((int(cx - ux * far), int(cy - uy * far)),
+                (int(cx + ux * far), int(cy + uy * far)))
+
+    # buffer band edges — inside this band nothing is committed
+    for offset in (counter.buffer_px, -counter.buffer_px):
+        p, q = extended(offset)
+        cv2.line(img, p, q, (90, 90, 110), 1, cv2.LINE_AA)
+
+    p, q = extended(0)
+    cv2.line(img, p, q, (70, 150, 180), 1, cv2.LINE_AA)   # infinite extent, dim
+    cv2.line(img, (int(ax), int(ay)), (int(bx), int(by)), (0, 220, 255), 3)  # clicked part
+
+    mx, my = (ax + bx) / 2, (ay + by) / 2
+    gap = counter.buffer_px + 26
+    near = (int(mx + nx * gap), int(my + ny * gap))
+    far = (int(mx - nx * gap), int(my - ny * gap))
+    near_is_out = side_of_line(counter.line, near, margin=0) == counter.in_from
+    _txt(img, counter.out_label if near_is_out else counter.in_label, near, 0.6,
+         (150, 200, 255) if near_is_out else (120, 220, 120), 2)
+    _txt(img, counter.in_label if near_is_out else counter.out_label, far, 0.6,
+         (120, 220, 120) if near_is_out else (150, 200, 255), 2)
+    _txt(img, f"buffer {counter.buffer_px:.0f}px — cross fully past both grey lines",
+         (12, h - 14), 0.45, (170, 170, 185), 1)
+
+
+def draw_tracks_overlay(img, tracks, counter) -> None:
+    """Mark each tracked person's foot point — the single point the counter
+    actually uses — with its track id and which side of the line it is on.
+
+    Without this there is no way to tell a detection problem from a geometry
+    problem: the view shows blurred people either way, while the count stays
+    at zero.
+    """
+    for tid, (x1, y1, x2, y2) in tracks:
+        foot = (int((x1 + x2) / 2), int(y2))
+        label, colour = f"#{tid}", (255, 200, 0)
+
+        if isinstance(counter, EntryExitCounter):
+            distance = signed_distance(counter.line, foot)
+            if abs(distance) < counter.buffer_px:
+                colour = (0, 220, 255)          # in the buffer band — not committed
+                label += " ~line"
+            else:
+                side = 1 if distance > 0 else -1
+                inside = side != counter.in_from
+                colour = (120, 220, 120) if inside else (200, 160, 90)
+                label += f" {counter.in_label if inside else counter.out_label}"
+            label += f" {abs(distance):.0f}px"
+        elif isinstance(counter, DoorwayCounter):
+            inside = point_in_rect(counter.rect, foot)
+            colour = (120, 220, 120) if inside else (200, 160, 90)
+            label += f" {counter.in_label if inside else counter.out_label}"
+
+        cv2.circle(img, foot, 8, colour, -1)
+        cv2.circle(img, foot, 8, (20, 20, 20), 1)
+        cv2.line(img, (foot[0], foot[1] - 18), foot, colour, 2)
+        _txt(img, label, (foot[0] + 12, foot[1] - 6), 0.5, colour, 2)
 
 
 def draw_panel(h: int, counter: EntryExitCounter | DoorwayCounter, qa: QueueAnalyzer, fps: float, bus: EventBus) -> np.ndarray:
@@ -184,6 +246,15 @@ def draw_panel(h: int, counter: EntryExitCounter | DoorwayCounter, qa: QueueAnal
         line("OPEN ANOTHER COUNTER", 0.65, (255, 255, 255), 34, 2)
     else:
         line("Status: queue under control", 0.55, (120, 220, 120), 40)
+    activity = list(getattr(counter, "activity", []))
+    line("TRACKING", 0.55, (150, 170, 190), 24)
+    if activity:
+        for entry in activity[-4:]:
+            line(entry[:40], 0.45, (200, 200, 210), 19)
+    else:
+        line("no side changes yet", 0.45, (150, 150, 160), 19)
+    y += 10
+
     line("PRIVACY", 0.55, (150, 170, 190), 26)
     line("Images written to disk: 0", 0.55, (180, 230, 210), 24)
     counts = bus.counts()
@@ -203,6 +274,10 @@ def main():
                           "entering it counts as IN, leaving it counts as OUT.")
     ap.add_argument("--doorway-config", default=None, help="override path to the doorway rectangle config")
     ap.add_argument("--line-config", default=None, help="override path to the entry line config")
+    ap.add_argument("--buffer-px", type=float, default=None,
+                     help="how far past the line a foot point must get before a side counts "
+                          "as confirmed (default from settings.yaml). Lower it if the walkable "
+                          "space either side of your line is tight.")
     ap.add_argument("--initial-inside", type=int, default=None,
                      help="how many people are already inside the store at startup "
                           "(skips the interactive prompt; useful for --headless/--simulate runs)")
@@ -237,14 +312,43 @@ def main():
         doorway_cfg = load_doorway() if args.counting_mode == "doorway" else None
         line_cfg = None  # simulator's own geometry() already gives a line/in_from
     else:
-        entrance_src = open_source(cameras.get("entrance", {}))
+        entrance_cfg = dict(cameras.get("entrance", {}))
+        entrance_src = open_source(entrance_cfg)
         frame = None
         t_wait = time.time()
         while frame is None and time.time() - t_wait < 15:
             frame = entrance_src.read()
             time.sleep(0.05)
+
         if frame is None:
-            raise RuntimeError(f"cannot reach camera at {cameras['entrance']['url']} — check the hotspot")
+            # A phone's address changes whenever it moves between Wi-Fi and its
+            # own hotspot. Rather than dying mid-demo, look for it on this
+            # subnet and carry on with whatever we find.
+            configured = entrance_cfg.get("url", "")
+            print(f"Could not reach {configured} — scanning the network for the camera...")
+            from storesmart.common.camera_check import find_camera_url
+
+            discovered = find_camera_url(configured)
+            if discovered:
+                print(f"Found it at {discovered} — using that. "
+                      f"Update config/cameras.local.yaml to keep it.")
+                entrance_src.release()
+                entrance_cfg["url"] = discovered
+                entrance_src = open_source(entrance_cfg)
+                t_wait = time.time()
+                while frame is None and time.time() - t_wait < 15:
+                    frame = entrance_src.read()
+                    time.sleep(0.05)
+
+        if frame is None:
+            raise RuntimeError(
+                f"cannot reach camera at {entrance_cfg.get('url')}, and no camera server was "
+                "found on this network.\n"
+                "  - is the phone's IP-camera app open, in the foreground, with the server on?\n"
+                "  - are the Mac and the phone on the SAME network? (if the phone is the "
+                "hotspot, the Mac has to actually join it — check the Wi-Fi menu)\n"
+                "  - try: .venv/bin/python -m storesmart.common.camera_check --scan"
+            )
         h, w = frame.shape[:2]
         geom = {"queue": [[0.42, 0.38], [0.74, 0.38], [0.74, 0.62], [0.42, 0.62]],
                 "service": [[0.77, 0.28], [0.93, 0.28], [0.93, 0.72], [0.77, 0.72]]}
@@ -288,14 +392,14 @@ def main():
     elif line_cfg is not None:
         counter = EntryExitCounter(
             line=_scale(line_cfg["line"], w, h), in_from=line_cfg["in_from"],
-            buffer_px=settings.get("buffer_px", 40), lost_after=settings.get("lost_after_s", 1.5),
+            buffer_px=(args.buffer_px if args.buffer_px is not None else settings.get("buffer_px", 40)), lost_after=settings.get("lost_after_s", 1.5),
             in_label=line_cfg.get("in_label", "Inside"), out_label=line_cfg.get("out_label", "Outside"),
             initial_inside=initial_inside, max_group_size=max_group_size,
         )
     else:
         counter = EntryExitCounter(
             line=_scale(geom["line"], w, h), in_from=geom["in_from"],
-            buffer_px=settings.get("buffer_px", 40), lost_after=settings.get("lost_after_s", 1.5),
+            buffer_px=(args.buffer_px if args.buffer_px is not None else settings.get("buffer_px", 40)), lost_after=settings.get("lost_after_s", 1.5),
             initial_inside=initial_inside, max_group_size=max_group_size,
         )
     qa = QueueAnalyzer(
@@ -354,6 +458,7 @@ def main():
                 draw_doorway_overlay(img, counter)
             elif isinstance(counter, EntryExitCounter):
                 draw_line_overlay(img, counter)
+            draw_tracks_overlay(img, tracks, counter)
             panel = draw_panel(img.shape[0], counter, qa, fps, bus)
             cv2.imshow(WIN, np.hstack([img, panel]))
             wait_ms = max(1, int((dt_sim - (time.time() - tnow)) * 1000)) if simulate else 1

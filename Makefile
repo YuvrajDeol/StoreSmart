@@ -1,4 +1,4 @@
-.PHONY: setup test sim demo dashboard seed reset-data coreml
+.PHONY: setup test sim demo demo-start demo-stop dashboard seed reset-data coreml
 
 VENV := .venv
 PY := $(VENV)/bin/python
@@ -18,6 +18,13 @@ sim:
 
 demo:
 	bash scripts/run_all.sh
+
+# One command to reach a demo-ready state (see docs/demo-2min.md)
+demo-start:
+	bash scripts/demo_start.sh
+
+demo-stop:
+	bash scripts/demo_stop.sh
 
 dashboard:
 	$(PY) -m streamlit run storesmart/dashboard/app.py

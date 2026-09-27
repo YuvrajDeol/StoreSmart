@@ -31,6 +31,10 @@ only position and time, so it doesn't fabricate a phantom crossing.
 """
 from __future__ import annotations
 
+import math
+from collections import deque
+from typing import Optional
+
 from storesmart.common.bus import EventBus
 from storesmart.common.config import load_json, save_json
 from storesmart.common.geometry import signed_distance
@@ -55,11 +59,17 @@ class EntryExitCounter:
         self.in_label = in_label
         self.out_label = out_label
         self.initial_inside = initial_inside
+        self.relink_window_s = relink_window_s
+        self.relink_max_px = relink_max_px
         self.confirmed_side: dict[int, int] = {}
         self.last_seen: dict[int, float] = {}
         self.last_position: dict[int, tuple[float, float]] = {}
         self.entries = 0
         self.exits = 0
+        #: Human-readable trail of the last few side changes, for the on-screen
+        #: panel — makes "is the geometry registering crossings at all?"
+        #: answerable without attaching a debugger mid-demo.
+        self.activity: deque[str] = deque(maxlen=6)
         self._group_estimator = GroupSizeEstimator(max_group_size=max_group_size)
         self._relinker = TrackRelinker(window_s=relink_window_s, max_px=relink_max_px)
 
@@ -67,7 +77,38 @@ class EntryExitCounter:
         self.in_from = -self.in_from
         self.confirmed_side.clear()
 
+    def _inherit_side(self, new_tid: int, foot: tuple[float, float], now: float,
+                      current_ids: set[int]) -> Optional[int]:
+        """Carry a crossing state over when the tracker swaps a person's ID.
+
+        The replacement ID usually appears in the very next frame, while the
+        old one is not stale yet (that takes `lost_after`), so the stale-track
+        relinker has nothing to match against at that moment — the crossing
+        would be lost. So first look for a track that is still known but has
+        just vanished from this frame, near this position.
+        """
+        best: Optional[tuple[float, int, int]] = None
+        for other_tid, side in self.confirmed_side.items():
+            if other_tid == new_tid or other_tid in current_ids:
+                continue  # still being tracked in its own right
+            position = self.last_position.get(other_tid)
+            if position is None or now - self.last_seen.get(other_tid, -1e9) > self.relink_window_s:
+                continue
+            distance = math.hypot(foot[0] - position[0], foot[1] - position[1])
+            if distance <= self.relink_max_px and (best is None or distance < best[0]):
+                best = (distance, other_tid, side)
+
+        if best is not None:
+            _, other_tid, side = best
+            self.confirmed_side.pop(other_tid, None)
+            self.last_seen.pop(other_tid, None)
+            self.last_position.pop(other_tid, None)
+            self.activity.append(f"#{other_tid}->#{new_tid} same person")
+            return side
+        return self._relinker.try_relink(foot, now)
+
     def update(self, tracks: list[tuple[int, tuple[int, int, int, int]]], now: float, bus: EventBus) -> None:
+        current_ids = {tid for tid, _ in tracks}
         for tid, (x1, y1, x2, y2) in tracks:
             foot = ((x1 + x2) / 2, y2)
             self.last_seen[tid] = now
@@ -78,8 +119,14 @@ class EntryExitCounter:
             s = 1 if d > 0 else -1
             prev = self.confirmed_side.get(tid)
             if prev is None:
-                prev = self._relinker.try_relink(foot, now)
+                prev = self._inherit_side(tid, foot, now, current_ids)
+                if prev is None:
+                    self.activity.append(
+                        f"#{tid} first seen {self.in_label if s != self.in_from else self.out_label}")
             if prev is not None and prev != s:
+                self.activity.append(
+                    f"#{tid} {self.out_label if prev == self.in_from else self.in_label}"
+                    f" -> {self.in_label if s != self.in_from else self.out_label}")
                 group_size = self._group_estimator.estimate(x2 - x1)
                 if prev == self.in_from:
                     self.entries += group_size

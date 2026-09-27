@@ -225,6 +225,33 @@ def scan_network(timeout_s: float = 0.4, max_hosts: int = 64) -> dict:
     return {"scanned": f"{network} ({len(hosts)} hosts)", "local_ip": local_ip, "found": found}
 
 
+def find_camera_url(configured_url: str, timeout_s: float = 6.0) -> str | None:
+    """Find the camera again after its address changed.
+
+    A phone's IP changes every time it moves between Wi-Fi and its own
+    hotspot, which otherwise means editing config mid-demo. Scans the local
+    subnet for a camera server and rebuilds the configured URL against
+    whatever it finds — keeping the scheme, credentials and path, since only
+    the host and port actually change.
+    """
+    from urllib.parse import urlsplit, urlunsplit
+
+    parts = urlsplit(configured_url)
+    credentials = ""
+    if parts.username:
+        credentials = parts.username + (f":{parts.password}" if parts.password else "") + "@"
+    path = parts.path or "/"
+
+    for entry in scan_network().get("found", []):
+        if entry["scheme"] != "http":
+            continue
+        candidate = urlunsplit(("http", f"{credentials}{entry['host']}:{entry['port']}",
+                                path, "", ""))
+        if probe(candidate, timeout_s).get("ok"):
+            return candidate
+    return None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", nargs="?", default=None,

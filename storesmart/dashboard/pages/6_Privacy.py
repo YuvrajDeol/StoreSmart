@@ -64,6 +64,30 @@ def render():
     ], cols=4)
 
     st.write("")
+    st.markdown("##### Try to break it")
+    st.caption(
+        "Simulates a bug — or an attacker — trying to smuggle a camera frame out as an "
+        "event. The gate should reject it and count it, storing none of the image data."
+    )
+    inject_col, result_col = st.columns([1, 3])
+    if inject_col.button("💉 Inject fake image event", use_container_width=True):
+        accepted = bus.emit({
+            "cam": "entrance", "type": "entry",
+            "image_base64": "/9j/4AAQSkZJRgABAQAAAQABAAD" + "A" * 200,
+        })
+        # Held in session state, not rendered inline: this fragment re-runs
+        # every couple of seconds, which would wipe the result off the screen
+        # moments after someone pressed the button.
+        st.session_state["inject_result"] = accepted
+
+    outcome = st.session_state.get("inject_result")
+    if outcome is True:
+        result_col.error("BUG: the event was accepted! This should never happen.")
+    elif outcome is False:
+        result_col.success(
+            "Rejected by the event gate, as expected — no image data was stored.")
+
+    st.write("")
     left, right = st.columns([3, 2], gap="medium")
 
     with left:
@@ -92,22 +116,6 @@ def render():
 
 render()
 
-st.divider()
-st.subheader("Try to break it")
-st.caption(
-    "This simulates a bug (or an attacker) trying to smuggle a camera frame out as an event. "
-    "The gate should reject it and count it, without storing any of the image data."
-)
-col1, col2 = st.columns([1, 3])
-if col1.button("💉 Inject fake image event", use_container_width=True):
-    accepted = bus.emit({
-        "cam": "entrance", "type": "entry",
-        "image_base64": "/9j/4AAQSkZJRgABAQAAAQABAAD" + "A" * 200,
-    })
-    if accepted:
-        col2.error("BUG: the event was accepted! This should never happen.")
-    else:
-        col2.success("Rejected by the event gate, as expected — no image data was stored.")
 
 with st.expander("Raw event log (last 50)"):
     st.dataframe(pd.DataFrame(bus.recent(limit=50)), use_container_width=True, height=340)
