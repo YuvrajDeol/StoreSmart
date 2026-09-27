@@ -12,6 +12,35 @@
 | 🔗 **Standalone presentation of this work** | [Shelf Gap Detection & Stock Alerts](https://github.com/divasbansal956-spec/storesmart-shelf-gap-detection) |
 | 🔗 **Complete team project (main branch)** | [StoreSmart](https://github.com/YuvrajDeol/StoreSmart) |
 
+### What this branch adds
+
+A shelf camera watches slot-sized regions of a shelf and tells the stock
+system when one goes empty:
+
+- **`storesmart/phase3_shelf/gap_detector.py`** — measures how much of a
+  slot still looks like bare shelf via an HSV colour-range test, with a
+  band fitted per slot (so a wooden shelf and a white wall coexist without
+  one surface's calibration breaking the other). Two consecutive readings
+  must agree before a state change is reported, filtering out a shopper's
+  hand momentarily passing through.
+- **`storesmart/dashboard/pages/7_Shelf_Calibration.py`** — the calibration
+  tool: click-detect objects in a single live frame, or show it an empty vs.
+  a stocked shelf and let it diff the two; fits and previews each slot's
+  band before anything is saved.
+- **`storesmart/stock/rules.py` + `forecast.py`** (pre-existing, wired into
+  by this work) — turn a confirmed empty slot into a **refill** alert
+  (stock exists in the storeroom), a **reorder** alert (projected to run
+  out before the next supplier visit, from a 14-day sales average), or a
+  **mismatch** alert (the database says stock is on the shelf and nothing
+  sold recently, but the camera disagrees — shrinkage or a misplaced item).
+- **`storesmart/phase3_shelf/run.py`** — the polling loop tying the above
+  together; runs without `ultralytics` installed via `--no-person-tracker`.
+
+No camera frame is ever written to disk or sent anywhere — only small JSON
+events (e.g. `{"slot": "A2", "fill_pct": 84.2, "state": "empty"}`) leave the
+detector. Full write-up, screenshots, and setup instructions are in the
+[standalone repo](https://github.com/divasbansal956-spec/storesmart-shelf-gap-detection).
+
 ---
 
 **Privacy-first, real-time store intelligence from a store's existing cameras — no frame is ever stored or sent.**
