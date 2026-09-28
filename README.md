@@ -14,31 +14,34 @@
 
 ### What this branch adds
 
-A shelf camera watches slot-sized regions of a shelf and tells the stock
-system when one goes empty:
+The Phase 3 shelf-monitoring pipeline itself — the HSV empty/low/ok
+threshold, the two-frame temporal confirmation, the person-occlusion skip,
+and the stock rules engine (`storesmart/stock/rules.py`, `forecast.py`) that
+turns a confirmed empty slot into a **refill**, **reorder**, or **mismatch**
+alert — was built by [Yuvraj](https://github.com/YuvrajDeol) as the initial
+Phase 3 implementation.
 
-- **`storesmart/phase3_shelf/gap_detector.py`** — measures how much of a
-  slot still looks like bare shelf via an HSV colour-range test, with a
-  band fitted per slot (so a wooden shelf and a white wall coexist without
-  one surface's calibration breaking the other). Two consecutive readings
-  must agree before a state change is reported, filtering out a shopper's
-  hand momentarily passing through.
-- **`storesmart/dashboard/pages/7_Shelf_Calibration.py`** — the calibration
-  tool: click-detect objects in a single live frame, or show it an empty vs.
-  a stocked shelf and let it diff the two; fits and previews each slot's
-  band before anything is saved.
-- **`storesmart/stock/rules.py` + `forecast.py`** (pre-existing, wired into
-  by this work) — turn a confirmed empty slot into a **refill** alert
-  (stock exists in the storeroom), a **reorder** alert (projected to run
-  out before the next supplier visit, from a 14-day sales average), or a
-  **mismatch** alert (the database says stock is on the shelf and nothing
-  sold recently, but the camera disagrees — shrinkage or a misplaced item).
-- **`storesmart/phase3_shelf/run.py`** — the polling loop tying the above
-  together; runs without `ultralytics` installed via `--no-person-tracker`.
+This branch adds a calibration layer on top of that pipeline:
+
+- **Per-slot backdrop bands** (`gap_detector.py`) — the original detector
+  used one global HSV band shared by every slot, which only works if every
+  slot sits against the same surface. That meant a wood-backed slot could
+  never report empty, because its band was fitted to a white wall. Slots may
+  now carry their own band, so different surfaces coexist correctly.
+- **`storesmart/dashboard/pages/7_Shelf_Calibration.py`** (new) — a
+  calibration tool: click-detect objects in a single live frame, or show it
+  an empty vs. a stocked shelf and let it diff the two; fits and previews
+  each slot's band, including a fitter that resists shadow contamination
+  by scoring candidate bounds against both the backdrop and the product.
+- **`--no-person-tracker`** flag (`run.py`) — runs the pipeline without the
+  `ultralytics` dependency installed.
+- **`save_yaml()`** (`common/config.py`) — supporting utility the
+  calibration tool needed to persist settings.
 
 No camera frame is ever written to disk or sent anywhere — only small JSON
 events (e.g. `{"slot": "A2", "fill_pct": 84.2, "state": "empty"}`) leave the
-detector. Full write-up, screenshots, and setup instructions are in the
+detector; that guarantee predates this branch. Full write-up, screenshots,
+and setup instructions for this contribution are in the
 [standalone repo](https://github.com/divasbansal956-spec/storesmart-shelf-gap-detection).
 
 ---
