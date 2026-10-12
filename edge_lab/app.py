@@ -148,19 +148,56 @@ def save_line(line_norm, in_from):
     LINE_FILE.write_text(json.dumps({"line": line_norm, "in_from": in_from}))
 
 
+def _window_scale(win: str, view_width: int) -> float:
+    """How much the window is scaling the image it is showing.
+
+    getWindowImageRect gives the on-screen rect of the image area; some
+    backends return zeros or -1 before the window is mapped, in which case
+    assume 1:1 rather than dividing by nonsense.
+    """
+    try:
+        shown_w = cv2.getWindowImageRect(win)[2]
+    except Exception:
+        return 1.0
+    if not shown_w or shown_w <= 0 or view_width <= 0:
+        return 1.0
+    return shown_w / view_width
+
+
 class LineSetup:
-    """Non-blocking version of run_line_setup(): click 2 line points, then 1 on the OUTSIDE."""
+    """Non-blocking version of run_line_setup(): click 2 line points, then 1 on the OUTSIDE.
+
+    Clicks arrive in *window* coordinates, which are not frame coordinates:
+    the window is resizable so OpenCV scales the image to fit it, and the
+    title banner is stacked on top of the frame. Both have to be undone or
+    the line lands somewhere other than where it was clicked — set_transform
+    supplies the current scale and banner height each frame.
+    """
 
     def __init__(self):
         self.active = False
         self.pts: list[tuple[int, int]] = []
+        self._scale = 1.0
+        self._offset_y = 0
+        self._size = (0, 0)  # frame w, h — for clamping
 
     def start(self):
         self.active, self.pts = True, []
 
+    def set_transform(self, scale: float, offset_y: int, size: tuple[int, int]):
+        self._scale = scale if scale and scale > 0 else 1.0
+        self._offset_y = offset_y
+        self._size = size
+
     def on_mouse(self, e, x, y, *_):
-        if self.active and e == cv2.EVENT_LBUTTONDOWN and len(self.pts) < 3:
-            self.pts.append((x, y))
+        if not (self.active and e == cv2.EVENT_LBUTTONDOWN and len(self.pts) < 3):
+            return
+        fx = int(x / self._scale)
+        fy = int(y / self._scale) - self._offset_y
+        w, h = self._size
+        if w and h:  # a click on the banner itself would otherwise go negative
+            fx, fy = max(0, min(fx, w - 1)), max(0, min(fy, h - 1))
+        self.pts.append((fx, fy))
 
     def draw(self, img):
         for p in self.pts[:2]:
@@ -355,6 +392,10 @@ def main(argv=None):
                 hud(view, rows, ok)
                 if gui:
                     cv2.imshow(WIN_P, view)
+                    # Tell the click handler how the window is currently
+                    # scaling this view, so clicks map back to frame pixels.
+                    setup.set_transform(_window_scale(WIN_P, view.shape[1]),
+                                        view.shape[0] - pf.shape[0], (w, h))
             if want_shelf:
                 sf = sframe.copy()
                 draw_shelf(sf, present, missing, watcher.baseline_count, list(watcher.log))
