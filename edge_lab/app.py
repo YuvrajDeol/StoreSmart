@@ -148,77 +148,57 @@ def save_line(line_norm, in_from):
     LINE_FILE.write_text(json.dumps({"line": line_norm, "in_from": in_from}))
 
 
-def _window_scale(win: str, view_width: int) -> float:
-    """How much the window is scaling the image it is showing.
+def draw_line_blocking(win: str, get_frame):
+    """Click 2 endpoints, then 1 point on the OUTSIDE. Blocks until done.
 
-    getWindowImageRect gives the on-screen rect of the image area; some
-    backends return zeros or -1 before the window is mapped, in which case
-    assume 1:1 rather than dividing by nonsense.
+    This is deliberately the same blocking loop as run_line_setup() in
+    storesmart/phase1_footfall/run.py, which works in the field. An earlier
+    non-blocking rewrite drove this from the main render loop, where the
+    clicks had to be mapped back through the title banner and the window's
+    own scaling — too many ways to be wrong, and it was.
+
+    Here nothing is stacked on the frame and the window is sized to the
+    image, so a click is already in frame coordinates.
+
+    Returns (line_px, in_from) or None if cancelled with ESC.
     """
+    pts: list[tuple[int, int]] = []
+    cv2.setMouseCallback(
+        win, lambda e, x, y, *_: pts.append((x, y)) if e == cv2.EVENT_LBUTTONDOWN else None)
+    size = None
     try:
-        shown_w = cv2.getWindowImageRect(win)[2]
-    except Exception:
-        return 1.0
-    if not shown_w or shown_w <= 0 or view_width <= 0:
-        return 1.0
-    return shown_w / view_width
+        while len(pts) < 3:
+            frame = get_frame()
+            if frame is None:
+                if cv2.waitKey(30) & 0xFF == 27:
+                    return None
+                continue
+            size = (frame.shape[1], frame.shape[0])
+            img = frame.copy()
+            for p in pts[:2]:
+                cv2.circle(img, p, 6, (0, 0, 255), -1)
+            if len(pts) >= 2:
+                cv2.line(img, pts[0], pts[1], (0, 220, 255), 2)
+            if len(pts) >= 3:
+                break
+            stage = ("click the line's 2 endpoints" if len(pts) < 2
+                     else "now click a point on the OUTSIDE (away from the store)")
+            for y, text, colour in ((28, f"SETUP - {stage}", (0, 255, 255)),
+                                    (54, "RAW VIEW - setup only, nothing is saved   (ESC = cancel)",
+                                     (235, 235, 235))):
+                cv2.putText(img, text, (10, y), FONT, 0.55, (0, 0, 0), 3, cv2.LINE_AA)
+                cv2.putText(img, text, (10, y), FONT, 0.55, colour, 1, cv2.LINE_AA)
+            cv2.imshow(win, img)
+            if (cv2.waitKey(30) & 0xFF) == 27:
+                return None
+    finally:
+        cv2.setMouseCallback(win, lambda *a: None)
 
-
-class LineSetup:
-    """Non-blocking version of run_line_setup(): click 2 line points, then 1 on the OUTSIDE.
-
-    Clicks arrive in *window* coordinates, which are not frame coordinates:
-    the window is resizable so OpenCV scales the image to fit it, and the
-    title banner is stacked on top of the frame. Both have to be undone or
-    the line lands somewhere other than where it was clicked — set_transform
-    supplies the current scale and banner height each frame.
-    """
-
-    def __init__(self):
-        self.active = False
-        self.pts: list[tuple[int, int]] = []
-        self._scale = 1.0
-        self._offset_y = 0
-        self._size = (0, 0)  # frame w, h — for clamping
-
-    def start(self):
-        self.active, self.pts = True, []
-
-    def set_transform(self, scale: float, offset_y: int, size: tuple[int, int]):
-        self._scale = scale if scale and scale > 0 else 1.0
-        self._offset_y = offset_y
-        self._size = size
-
-    def on_mouse(self, e, x, y, *_):
-        if not (self.active and e == cv2.EVENT_LBUTTONDOWN and len(self.pts) < 3):
-            return
-        fx = int(x / self._scale)
-        fy = int(y / self._scale) - self._offset_y
-        w, h = self._size
-        if w and h:  # a click on the banner itself would otherwise go negative
-            fx, fy = max(0, min(fx, w - 1)), max(0, min(fy, h - 1))
-        self.pts.append((fx, fy))
-
-    def draw(self, img):
-        for p in self.pts[:2]:
-            cv2.circle(img, p, 6, (0, 0, 255), -1)
-        if len(self.pts) >= 2:
-            cv2.line(img, self.pts[0], self.pts[1], (0, 220, 255), 2)
-        stage = "click the line's 2 endpoints" if len(self.pts) < 2 else \
-            "now click a point on the OUTSIDE (away from the store)"
-        for dy, t, c in ((28, f"SETUP - {stage}", (0, 255, 255)),
-                         (54, "RAW VIEW - setup only, nothing is saved   (ESC = cancel)", (235, 235, 235))):
-            cv2.putText(img, t, (10, dy + 26), FONT, 0.55, (0, 0, 0), 3, cv2.LINE_AA)
-            cv2.putText(img, t, (10, dy + 26), FONT, 0.55, c, 1, cv2.LINE_AA)
-
-    def result(self, w, h):
-        """-> (line_px, in_from) once 3 points are in, else None."""
-        if len(self.pts) < 3:
-            return None
-        line_px = self.pts[:2]
-        in_from = side_of_line(line_px, self.pts[2], margin=0) or 1
-        self.active = False
-        return line_px, in_from
+    if size is None or len(pts) < 3:
+        return None
+    line_px = pts[:2]
+    in_from = side_of_line(line_px, pts[2], margin=0) or 1
+    return line_px, in_from
 
 
 def hud_rows(meter, name, device, imgsz, extra, sim, src_label):
@@ -285,9 +265,13 @@ def main(argv=None):
             src.release()
             return 2
 
+    # Live frames for the blocking line setup. Only ever used in camera mode;
+    # the simulator supplies its own scripted geometry instead.
+    def read_frame():
+        return src.read() if src is not None else None
+
     counter = None
     line_px = band = None
-    setup = LineSetup()
     pmeter, smeter = PerfMeter(), PerfMeter()
     watcher = None
     bus = _NullBus()
@@ -299,7 +283,6 @@ def main(argv=None):
         if want_people:
             cv2.namedWindow(WIN_P, cv2.WINDOW_NORMAL)
             cv2.moveWindow(WIN_P, 20, 40)
-            cv2.setMouseCallback(WIN_P, setup.on_mouse)
         if want_shelf:
             cv2.namedWindow(WIN_S, cv2.WINDOW_NORMAL)
             cv2.moveWindow(WIN_S, 700 if want_people else 20, 40)
@@ -332,20 +315,22 @@ def main(argv=None):
 
             if want_people:
                 h, w = pframe.shape[:2]
-                if counter is None and not setup.active:
+                if counter is None:
                     saved = load_line()
+                    centre = [(w // 2, int(0.05 * h)), (w // 2, int(0.95 * h))]
                     if sim:  # simulator has its own scripted geometry
                         apply_line([(int(x * w), int(y * h)) for x, y in geo["line"]], geo["in_from"], w, h)
                     elif saved:
                         apply_line([(int(x * w), int(y * h)) for x, y in saved[0]], saved[1], w, h)
                     elif gui:
-                        setup.start()  # first run: ask the user to draw it
+                        drawn = draw_line_blocking(WIN_P, read_frame)
+                        if drawn is None:
+                            apply_line(centre, 1, w, h)   # cancelled: fall back
+                        else:
+                            apply_line(drawn[0], drawn[1], w, h)
+                            save_line([[x / w, y / h] for x, y in drawn[0]], drawn[1])
                     else:
-                        apply_line([(w // 2, int(0.05 * h)), (w // 2, int(0.95 * h))], 1, w, h)
-                res = setup.result(w, h) if setup.active else None
-                if res:
-                    apply_line(res[0], res[1], w, h)
-                    save_line([[x / w, y / h] for x, y in res[0]], res[1])
+                        apply_line(centre, 1, w, h)
 
             # --- real inference (timed; only recorded when a model ran) ---
             tracks, dets = [], []
@@ -359,7 +344,7 @@ def main(argv=None):
                     pmeter.last_ran = True
                 tracks = sim_tracks if sim else real
                 ndet_p = len(real)
-                if counter is not None and not setup.active:
+                if counter is not None:
                     counter.update(tracks, now, bus)
                 pmeter.tick()
             if want_shelf:
@@ -380,10 +365,7 @@ def main(argv=None):
 
             if want_people:
                 pf = pframe.copy()
-                if setup.active:
-                    setup.draw(pf)
-                else:
-                    draw_people(pf, tracks, counter, line_px, band, blur)
+                draw_people(pf, tracks, counter, line_px, band, blur)
                 view = banner(pf, "PEOPLE COUNTING  [l = redraw line, v = blur, q = quit]")
                 rows, ok = hud_rows(pmeter, f"{a.model} (YOLOv8 + ByteTrack)", device, a.imgsz,
                                     [("People (YOLO)", ndet_p, None),
@@ -392,10 +374,6 @@ def main(argv=None):
                 hud(view, rows, ok)
                 if gui:
                     cv2.imshow(WIN_P, view)
-                    # Tell the click handler how the window is currently
-                    # scaling this view, so clicks map back to frame pixels.
-                    setup.set_transform(_window_scale(WIN_P, view.shape[1]),
-                                        view.shape[0] - pf.shape[0], (w, h))
             if want_shelf:
                 sf = sframe.copy()
                 draw_shelf(sf, present, missing, watcher.baseline_count, list(watcher.log))
@@ -412,14 +390,8 @@ def main(argv=None):
                     break
                 if k == ord("v"):
                     blur = not blur
-                if k == ord("l") and want_people:
-                    setup.start()
-                    counter = None
-                if k == 27 and setup.active:
-                    setup.active = False
-                    if counter is None:  # cancelled first-run: fall back to centre line
-                        h, w = pframe.shape[:2]
-                        apply_line([(w // 2, int(0.05 * h)), (w // 2, int(0.95 * h))], 1, w, h)
+                if k == ord("l") and want_people and not sim:
+                    counter = None  # re-acquired (blocking) at the top of the next loop
                 if k == ord("b") and watcher is not None and want_shelf:
                     watcher.set_baseline(dets)
     finally:

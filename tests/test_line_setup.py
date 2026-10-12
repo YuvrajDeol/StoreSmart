@@ -1,79 +1,94 @@
-"""Click -> frame coordinate mapping for the entry-line setup.
+"""Entry-line setup for edge_lab.
 
-Regression: clicks arrive in window coordinates, but were stored as if they
-were frame coordinates. Two things break that — the title banner stacked on
-top of the frame, and the resizable window scaling the image — so the drawn
-line landed nowhere near where it was clicked.
+History worth keeping: a non-blocking rewrite drove the clicks from the main
+render loop, which meant every click had to be mapped back through the title
+banner stacked on the frame and through the window's own scaling. It never
+worked reliably. edge_lab now reuses the blocking loop that
+storesmart/phase1_footfall/run.py has always used, where the window shows the
+bare frame at its own size so a click is already in frame coordinates.
+
+These tests drive that loop headlessly by faking cv2's window callbacks.
 """
-import cv2
+import numpy as np
+import pytest
 
-from edge_lab.app import LineSetup
-
-BANNER_H = 26
-FRAME = (640, 480)  # w, h
+import edge_lab.app as app
 
 
-def click(setup, x, y):
-    setup.on_mouse(cv2.EVENT_LBUTTONDOWN, x, y)
+class FakeCv2:
+    """Minimal stand-in: records the mouse callback, then feeds it clicks."""
+
+    EVENT_LBUTTONDOWN = 1
+    LINE_AA = 16
+    FONT_HERSHEY_SIMPLEX = 0
+
+    def __init__(self, clicks, keys=None):
+        self._clicks = list(clicks)
+        self._keys = list(keys or [])
+        self._cb = None
+        self.shown = 0
+
+    def setMouseCallback(self, win, cb):
+        self._cb = cb
+
+    def imshow(self, win, img):
+        self.shown += 1
+
+    def waitKey(self, _ms):
+        # deliver one queued click per displayed frame
+        if self._clicks and self._cb:
+            x, y = self._clicks.pop(0)
+            self._cb(self.EVENT_LBUTTONDOWN, x, y)
+        return self._keys.pop(0) if self._keys else 255
+
+    def circle(self, *a, **k):
+        pass
+
+    def line(self, *a, **k):
+        pass
+
+    def putText(self, *a, **k):
+        pass
 
 
-def test_banner_offset_is_subtracted():
-    setup = LineSetup()
-    setup.start()
-    setup.set_transform(1.0, BANNER_H, FRAME)
-    click(setup, 100, 126)
-    assert setup.pts == [(100, 100)]  # 126 on screen is 100 in the frame
+@pytest.fixture
+def frame():
+    return np.zeros((480, 640, 3), np.uint8)
 
 
-def test_window_scaling_is_undone():
-    """Window showing the view at half size: a click at (50, 63) on screen is
-    (100, 100) in the frame once the banner is also accounted for."""
-    setup = LineSetup()
-    setup.start()
-    setup.set_transform(0.5, BANNER_H, FRAME)
-    click(setup, 50, 63)
-    assert setup.pts == [(100, 100)]
+def run(monkeypatch, clicks, frame, keys=None):
+    fake = FakeCv2(clicks, keys)
+    monkeypatch.setattr(app, "cv2", fake)
+    return app.draw_line_blocking("win", lambda: frame)
 
 
-def test_clicks_are_clamped_into_the_frame():
-    setup = LineSetup()
-    setup.start()
-    setup.set_transform(1.0, BANNER_H, FRAME)
-    click(setup, 5, 5)          # on the banner itself -> would be negative
-    click(setup, 9999, 9999)    # past the far corner
-    assert setup.pts[0] == (5, 0)
-    assert setup.pts[1] == (639, 479)
-
-
-def test_only_three_points_are_taken_and_only_while_active():
-    setup = LineSetup()
-    setup.set_transform(1.0, BANNER_H, FRAME)
-    click(setup, 10, 40)                      # inactive — ignored
-    assert setup.pts == []
-    setup.start()
-    for i in range(5):
-        click(setup, 10 + i, 40)
-    assert len(setup.pts) == 3
-
-
-def test_result_returns_line_and_direction_then_deactivates():
-    setup = LineSetup()
-    setup.start()
-    setup.set_transform(1.0, BANNER_H, FRAME)
-    click(setup, 320, 26 + 10)    # line top
-    click(setup, 320, 26 + 400)   # line bottom
-    click(setup, 100, 26 + 200)   # outside point, left of the line
-    out = setup.result(*FRAME)
+def test_three_clicks_produce_a_line_and_direction(monkeypatch, frame):
+    out = run(monkeypatch, [(320, 10), (320, 400), (100, 200)], frame)
     assert out is not None
     line_px, in_from = out
     assert line_px == [(320, 10), (320, 400)]
     assert in_from in (1, -1)
-    assert setup.active is False
 
 
-def test_result_is_none_before_three_clicks():
-    setup = LineSetup()
-    setup.start()
-    setup.set_transform(1.0, BANNER_H, FRAME)
-    click(setup, 320, 36)
-    assert setup.result(*FRAME) is None
+def test_clicks_are_used_as_frame_coordinates_unchanged(monkeypatch, frame):
+    """The whole point of the blocking loop: no banner, no window scaling, so
+    a click needs no correction to become a frame coordinate."""
+    line_px, _ = run(monkeypatch, [(11, 22), (33, 44), (55, 66)], frame)
+    assert line_px == [(11, 22), (33, 44)]
+
+
+def test_outside_point_flips_the_direction(monkeypatch, frame):
+    _, left = run(monkeypatch, [(320, 10), (320, 400), (100, 200)], frame)
+    _, right = run(monkeypatch, [(320, 10), (320, 400), (540, 200)], frame)
+    assert left == -right
+
+
+def test_escape_cancels(monkeypatch, frame):
+    # no clicks; first waitKey returns ESC
+    assert run(monkeypatch, [], frame, keys=[27]) is None
+
+
+def test_no_frames_available_does_not_hang(monkeypatch):
+    fake = FakeCv2([], keys=[27])
+    monkeypatch.setattr(app, "cv2", fake)
+    assert app.draw_line_blocking("win", lambda: None) is None
