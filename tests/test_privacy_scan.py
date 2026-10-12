@@ -17,7 +17,7 @@ BANNED_PATTERNS = [
 ]
 
 ALLOWED_DIRS = {"tests", "scripts/dev_only"}
-SCAN_DIRS = ["storesmart", "scripts", "dashboard"]
+SCAN_DIRS = ["storesmart", "scripts", "dashboard", "edge_lab"]
 
 
 def _is_allowed(path: Path) -> bool:
