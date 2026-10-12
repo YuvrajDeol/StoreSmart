@@ -7,20 +7,23 @@ Inference metrics are always real: they time an actual YOLOv8 forward pass
 from __future__ import annotations
 
 import argparse
+import json
 import time
+from pathlib import Path
 
 import cv2
 import numpy as np
 
 from edge_lab.metrics import PerfMeter
+from edge_lab.shelf_watch import ObjectDetector, ShelfWatcher
+from storesmart.common.geometry import side_of_line
 from storesmart.common.video import FrameSource
 from storesmart.phase1_footfall.counter import EntryExitCounter
-from storesmart.phase3_shelf.gap_detector import GapDetector
-from storesmart.phase3_shelf.slots import load_slots
 
-COLORS = {"ok": (0, 200, 0), "low": (0, 170, 255), "empty": (0, 0, 230)}
+LINE_FILE = Path(__file__).with_name("line.json")
+WIN_P = "Edge AI - People Counter"
+WIN_S = "Edge AI - Shelf Watch"
 FONT = cv2.FONT_HERSHEY_SIMPLEX
-MAX_VIEW_W = 1280
 
 
 class _NullBus:
@@ -76,15 +79,28 @@ def draw_people(out, tracks, counter, line_px, band, blur):
     return out
 
 
-def draw_shelf(out, slots, detector):
-    for s in slots:
-        st = detector.states[s["slot"]]
-        c = COLORS.get(st.state, (200, 200, 200))
-        x, y, w, h = s["x"], s["y"], s["w"], s["h"]
-        cv2.rectangle(out, (x, y), (x + w, y + h), c, 2)
-        t = f"{s['slot']} {st.fill_pct:.0f}%"
-        cv2.putText(out, t, (x + 4, y + 18), FONT, 0.5, (0, 0, 0), 3, cv2.LINE_AA)
-        cv2.putText(out, t, (x + 4, y + 18), FONT, 0.5, c, 1, cv2.LINE_AA)
+def draw_shelf(out, present, missing, baseline_n, log):
+    G, R = (0, 200, 0), (0, 0, 230)
+    for d in present:
+        x1, y1, x2, y2 = d.box
+        cv2.rectangle(out, (x1, y1), (x2, y2), G, 2)
+        t = f"{d.cls} {d.conf:.2f}"
+        cv2.putText(out, t, (x1 + 2, max(12, y1 - 5)), FONT, 0.5, (0, 0, 0), 3, cv2.LINE_AA)
+        cv2.putText(out, t, (x1 + 2, max(12, y1 - 5)), FONT, 0.5, G, 1, cv2.LINE_AA)
+    for d in missing:
+        x1, y1, x2, y2 = d.box
+        cv2.rectangle(out, (x1, y1), (x2, y2), R, 2)
+        t = f"TAKEN: {d.cls}"
+        cv2.putText(out, t, (x1 + 2, max(12, y1 - 5)), FONT, 0.55, (0, 0, 0), 3, cv2.LINE_AA)
+        cv2.putText(out, t, (x1 + 2, max(12, y1 - 5)), FONT, 0.55, R, 2, cv2.LINE_AA)
+    H = out.shape[0]
+    t = f"Items on shelf: {len(present)} / {baseline_n} baseline" if baseline_n else "Calibrating baseline... (b = set now)"
+    cv2.putText(out, t, (10, H - 12 - 18 * len(log)), FONT, 0.6, (0, 0, 0), 3, cv2.LINE_AA)
+    cv2.putText(out, t, (10, H - 12 - 18 * len(log)), FONT, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
+    for i, e in enumerate(log):
+        y = H - 8 - 18 * (len(log) - 1 - i)
+        cv2.putText(out, e, (10, y), FONT, 0.45, (0, 0, 0), 3, cv2.LINE_AA)
+        cv2.putText(out, e, (10, y), FONT, 0.45, (200, 255, 255), 1, cv2.LINE_AA)
     return out
 
 
@@ -119,15 +135,70 @@ def hud(img, rows, ok=True):
         cv2.putText(img, str(v), (vx, y), FONT, 0.55 * sc, col or (80, 255, 150), th, cv2.LINE_AA)
 
 
-def fit_height(img, h):
-    if img.shape[0] == h:
-        return img
-    s = h / img.shape[0]
-    return cv2.resize(img, (int(img.shape[1] * s), h))
+def load_line():
+    try:
+        d = json.loads(LINE_FILE.read_text())
+        return d["line"], int(d["in_from"])
+    except Exception:
+        return None
+
+
+def save_line(line_norm, in_from):
+    """Only coordinates are stored - never pixels."""
+    LINE_FILE.write_text(json.dumps({"line": line_norm, "in_from": in_from}))
+
+
+class LineSetup:
+    """Non-blocking version of run_line_setup(): click 2 line points, then 1 on the OUTSIDE."""
+
+    def __init__(self):
+        self.active = False
+        self.pts: list[tuple[int, int]] = []
+
+    def start(self):
+        self.active, self.pts = True, []
+
+    def on_mouse(self, e, x, y, *_):
+        if self.active and e == cv2.EVENT_LBUTTONDOWN and len(self.pts) < 3:
+            self.pts.append((x, y))
+
+    def draw(self, img):
+        for p in self.pts[:2]:
+            cv2.circle(img, p, 6, (0, 0, 255), -1)
+        if len(self.pts) >= 2:
+            cv2.line(img, self.pts[0], self.pts[1], (0, 220, 255), 2)
+        stage = "click the line's 2 endpoints" if len(self.pts) < 2 else \
+            "now click a point on the OUTSIDE (away from the store)"
+        for dy, t, c in ((28, f"SETUP - {stage}", (0, 255, 255)),
+                         (54, "RAW VIEW - setup only, nothing is saved   (ESC = cancel)", (235, 235, 235))):
+            cv2.putText(img, t, (10, dy + 26), FONT, 0.55, (0, 0, 0), 3, cv2.LINE_AA)
+            cv2.putText(img, t, (10, dy + 26), FONT, 0.55, c, 1, cv2.LINE_AA)
+
+    def result(self, w, h):
+        """-> (line_px, in_from) once 3 points are in, else None."""
+        if len(self.pts) < 3:
+            return None
+        line_px = self.pts[:2]
+        in_from = side_of_line(line_px, self.pts[2], margin=0) or 1
+        self.active = False
+        return line_px, in_from
+
+
+def hud_rows(meter, name, device, imgsz, extra, sim, src_label):
+    if meter.last_ran and meter.has_data:
+        return [("Model", name, None), ("Device", device, None), ("Input size", f"{imgsz}px", None),
+                ("Inference", f"{meter.inference_ms:.1f} ms mean", None),
+                ("Inference p95", f"{meter.p95_ms:.1f} ms", None),
+                ("FPS", f"{meter.fps:.1f}", None)] + extra + [
+                ("Source", "SIMULATED scene, real YOLO" if sim else src_label,
+                 (0, 200, 255) if sim else None)], True
+    red = (80, 80, 255)
+    return [("Model", "NO MODEL RAN - no inference", red), ("Inference", "n/a", red),
+            ("FPS", f"{meter.fps:.1f}", None), ("Source", "SIMULATED, detections are fake", red)], False
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="Edge AI lab: people counting + shelf gap detection")
+    ap = argparse.ArgumentParser(description="Edge AI lab: people counting + shelf item watch")
     ap.add_argument("--mode", choices=["people", "shelf", "both"], default="both")
     ap.add_argument("--source", default="0", help="camera index (default 0 = built-in webcam) or MJPEG/RTSP URL or video file")
     ap.add_argument("--simulate", action="store_true", help="use synthetic scenes instead of a camera (YOLO still runs on them)")
@@ -145,23 +216,21 @@ def main(argv=None):
     sim = a.simulate
     want_people = a.mode in ("people", "both")
     want_shelf = a.mode in ("shelf", "both")
+    use_model = not (sim and a.no_yolo_on_sim)
 
-    cfg = load_slots()
-    slots = cfg["slots"]
-    detector = GapDetector(slots, cfg["backdrop_hsv_lower"], cfg["backdrop_hsv_upper"])
-
-    tracker = None
-    if not (sim and a.no_yolo_on_sim):
+    tracker = objdet = None
+    if use_model and want_people:
         from storesmart.common.detector import PersonTracker
         tracker = PersonTracker(a.model, conf=a.conf, imgsz=a.imgsz, device=a.device)
-        # warm-up (model load / MPS kernel compile) so it doesn't pollute p95; blank frame, memory only
-        tracker.update(np.zeros((480, 640, 3), np.uint8))
+        tracker.update(np.zeros((480, 640, 3), np.uint8))  # warm-up, memory only
         try:
-            tracker.model.predictor.trackers[0].reset()  # forget warm-up track state
+            tracker.model.predictor.trackers[0].reset()
         except Exception:
             pass
-    device = tracker.device if tracker else "none"
-    model_name = a.model if tracker else "NONE"
+    if use_model and want_shelf:
+        objdet = ObjectDetector(a.model, conf=a.conf, imgsz=a.imgsz, device=a.device)
+        objdet.detect(np.zeros((480, 640, 3), np.uint8))  # warm-up
+    device = (tracker or objdet).device if (tracker or objdet) else "none"
 
     people_sim = shelf_sim = src = None
     geo = None
@@ -169,7 +238,7 @@ def main(argv=None):
         from storesmart.sim.people_sim import PeopleSimulator
         from storesmart.sim.shelf_sim import ShelfSimulator
         people_sim = PeopleSimulator()
-        shelf_sim = ShelfSimulator(slots)
+        shelf_sim = ShelfSimulator([{"slot": "A1", "x": 20, "y": 20, "w": 100, "h": 100}])
         geo = people_sim.geometry()
     else:
         s = int(a.source) if a.source.isdigit() else a.source
@@ -178,14 +247,26 @@ def main(argv=None):
             print(f"ERROR: {src.last_error}")
             src.release()
             return 2
+
     counter = None
     line_px = band = None
-    meter = PerfMeter()
-    gap_ms = 0.0
+    setup = LineSetup()
+    pmeter, smeter = PerfMeter(), PerfMeter()
+    watcher = None
     bus = _NullBus()
     blur = True
+    ndet_p = ndet_s = 0
+    stable_n, stable_since = -1, time.perf_counter()
+    gui = not a.headless
+    if gui:
+        if want_people:
+            cv2.namedWindow(WIN_P, cv2.WINDOW_NORMAL)
+            cv2.moveWindow(WIN_P, 20, 40)
+            cv2.setMouseCallback(WIN_P, setup.on_mouse)
+        if want_shelf:
+            cv2.namedWindow(WIN_S, cv2.WINDOW_NORMAL)
+            cv2.moveWindow(WIN_S, 700 if want_people else 20, 40)
     t0 = last = time.perf_counter()
-    ndet = 0
     try:
         while True:
             now = time.perf_counter()
@@ -199,95 +280,121 @@ def main(argv=None):
                     pframe, sim_tracks = people_sim.step(dt)
                 if want_shelf:
                     sframe, _ = shelf_sim.step(dt)
-                infer_frame = pframe if pframe is not None else sframe
             else:
                 f = src.read()
                 if f is None:
                     time.sleep(0.01)
                     continue
-                pframe = sframe = infer_frame = f
-            if want_people and counter is None:
-                h, w = pframe.shape[:2]
-                ln = geo["line"] if geo else [[0.5, 0.05], [0.5, 0.95]]  # webcam: vertical centre line
-                line_px = [(int(x * w), int(y * h)) for x, y in ln]
-                counter = EntryExitCounter(line_px, in_from=(geo or {}).get("in_from", 1))
+                pframe = sframe = f
+
+            def apply_line(lp, in_from, w, h):
+                nonlocal counter, line_px, band
+                line_px = lp
+                counter = EntryExitCounter(line_px, in_from=in_from)
                 band = make_band(line_px, counter.buffer_px)
 
-            # --- real inference (timed) ---
-            real = []
-            ran = False
-            if tracker is not None:
-                t = time.perf_counter()
-                real = tracker.update(infer_frame)
-                meter.add((time.perf_counter() - t) * 1000)
-                ran = True
-            meter.last_ran = ran
-            tracks = sim_tracks if (sim and want_people) else real
-            ndet = len(real)
+            if want_people:
+                h, w = pframe.shape[:2]
+                if counter is None and not setup.active:
+                    saved = load_line()
+                    if sim:  # simulator has its own scripted geometry
+                        apply_line([(int(x * w), int(y * h)) for x, y in geo["line"]], geo["in_from"], w, h)
+                    elif saved:
+                        apply_line([(int(x * w), int(y * h)) for x, y in saved[0]], saved[1], w, h)
+                    elif gui:
+                        setup.start()  # first run: ask the user to draw it
+                    else:
+                        apply_line([(w // 2, int(0.05 * h)), (w // 2, int(0.95 * h))], 1, w, h)
+                res = setup.result(w, h) if setup.active else None
+                if res:
+                    apply_line(res[0], res[1], w, h)
+                    save_line([[x / w, y / h] for x, y in res[0]], res[1])
+
+            # --- real inference (timed; only recorded when a model ran) ---
+            tracks, dets = [], []
+            pmeter.last_ran = smeter.last_ran = False
+            if want_people:
+                real = []
+                if tracker is not None:
+                    t = time.perf_counter()
+                    real = tracker.update(pframe)
+                    pmeter.add((time.perf_counter() - t) * 1000)
+                    pmeter.last_ran = True
+                tracks = sim_tracks if sim else real
+                ndet_p = len(real)
+                if counter is not None and not setup.active:
+                    counter.update(tracks, now, bus)
+                pmeter.tick()
+            if want_shelf:
+                if objdet is not None:
+                    t = time.perf_counter()
+                    dets = objdet.detect(sframe)
+                    smeter.add((time.perf_counter() - t) * 1000)
+                    smeter.last_ran = True
+                ndet_s = len(dets)
+                if watcher is None:
+                    watcher = ShelfWatcher(frame_width=sframe.shape[1])
+                if ndet_s != stable_n:
+                    stable_n, stable_since = ndet_s, now
+                if not watcher.has_baseline and ndet_s > 0 and now - stable_since >= 2.0:
+                    watcher.set_baseline(dets)  # auto-baseline after ~2 s of stable detections
+                present, missing, _ = watcher.update(dets) if watcher.has_baseline else (dets, [], [])
+                smeter.tick()
 
             if want_people:
-                counter.update(tracks, now, bus)
-            if want_shelf:
-                boxes = [b for _, b in real] if not sim else []
-                t = time.perf_counter()
-                detector.update(sframe, boxes)
-                gap_ms = (time.perf_counter() - t) * 1000
-            meter.tick()
-
-            panels = []
-            if want_people:
-                pf = pframe.copy() if (want_shelf and pframe is sframe) else pframe  # shelf analysis already done
-                panels.append(banner(draw_people(pf, tracks, counter, line_px, band, blur), "PEOPLE COUNTING"))
-            if want_shelf:
-                panels.append(banner(draw_shelf(sframe, slots, detector), "SHELF GAP DETECTION"))
-            h = max(p.shape[0] for p in panels)
-            view = panels[0] if len(panels) == 1 else np.hstack([fit_height(p, h) for p in panels])
-            if view.shape[1] > MAX_VIEW_W:  # single downscale; HUD drawn after so text stays crisp
-                s = MAX_VIEW_W / view.shape[1]
-                view = cv2.resize(view, (MAX_VIEW_W, int(view.shape[0] * s)), interpolation=cv2.INTER_AREA)
-
-            if ran and meter.has_data:
-                rows = [
-                    ("Model", f"{model_name} (YOLOv8 + ByteTrack)", None),
-                    ("Device", device, None),
-                    ("Input size", f"{a.imgsz}px", None),
-                    ("Inference", f"{meter.inference_ms:.1f} ms mean", None),
-                    ("Inference p95", f"{meter.p95_ms:.1f} ms", None),
-                    ("FPS", f"{meter.fps:.1f}", None),
-                    ("People (YOLO)", ndet, None),
-                ]
-                if want_shelf:
-                    rows.append(("Gap detector", f"{gap_ms:.1f} ms (classical CV)", None))
-                if sim:
-                    rows.append(("Source", "SIMULATED scene, real YOLO", (0, 200, 255)))
+                pf = pframe.copy()
+                if setup.active:
+                    setup.draw(pf)
                 else:
-                    rows.append(("Source", f"camera {a.source}", None))
-                ok = True
-            else:
-                red = (80, 80, 255)
-                rows = [("Model", "NO MODEL RAN - no inference", red),
-                        ("Inference", "n/a", red),
-                        ("FPS", f"{meter.fps:.1f}", None),
-                        ("Source", "SIMULATED, detections are fake", red)]
-                ok = False
-            hud(view, rows, ok)
+                    draw_people(pf, tracks, counter, line_px, band, blur)
+                view = banner(pf, "PEOPLE COUNTING  [l = redraw line, v = blur, q = quit]")
+                rows, ok = hud_rows(pmeter, f"{a.model} (YOLOv8 + ByteTrack)", device, a.imgsz,
+                                    [("People (YOLO)", ndet_p, None),
+                                     ("IN / OUT", f"{counter.entries} / {counter.exits}" if counter else "-", None)],
+                                    sim, f"camera {a.source}")
+                hud(view, rows, ok)
+                if gui:
+                    cv2.imshow(WIN_P, view)
+            if want_shelf:
+                sf = sframe.copy()
+                draw_shelf(sf, present, missing, watcher.baseline_count, list(watcher.log))
+                view = banner(sf, "SHELF WATCH  [b = set baseline, q = quit]")
+                rows, ok = hud_rows(smeter, f"{a.model} (YOLOv8 detect)", device, a.imgsz,
+                                    [("Detections", ndet_s, None)], sim, f"camera {a.source}")
+                hud(view, rows, ok)
+                if gui:
+                    cv2.imshow(WIN_S, view)
 
-            if not a.headless:
-                cv2.imshow("StoreSmart Edge Lab", view)
-                k = cv2.waitKey(1) & 0xFF
+            if gui:
+                k = cv2.waitKey(1) & 0xFF  # one waitKey drives every window
                 if k == ord("q"):
                     break
                 if k == ord("v"):
                     blur = not blur
+                if k == ord("l") and want_people:
+                    setup.start()
+                    counter = None
+                if k == 27 and setup.active:
+                    setup.active = False
+                    if counter is None:  # cancelled first-run: fall back to centre line
+                        h, w = pframe.shape[:2]
+                        apply_line([(w // 2, int(0.05 * h)), (w // 2, int(0.95 * h))], 1, w, h)
+                if k == ord("b") and watcher is not None and want_shelf:
+                    watcher.set_baseline(dets)
     finally:
         if src is not None:
             src.release()
-        if not a.headless:
+        if gui:
             cv2.destroyAllWindows()
-    inf = (f"mean={meter.inference_ms:.1f}ms p95={meter.p95_ms:.1f}ms inferences={meter.inferences}"
-           if meter.has_data else "inference=NONE (no model ran)")
-    print(f"frames={meter.frames} {inf} fps={meter.fps:.1f} device={device} "
-          f"in={getattr(counter, 'entries', 0)} out={getattr(counter, 'exits', 0)}")
+    def summ(m):
+        return (f"mean={m.inference_ms:.1f}ms p95={m.p95_ms:.1f}ms inferences={m.inferences} fps={m.fps:.1f}"
+                if m.has_data else f"inference=NONE (no model ran) fps={m.fps:.1f}")
+    if want_people:
+        print(f"[people] frames={pmeter.frames} {summ(pmeter)} device={device} "
+              f"in={getattr(counter, 'entries', 0)} out={getattr(counter, 'exits', 0)}")
+    if want_shelf:
+        print(f"[shelf] frames={smeter.frames} {summ(smeter)} device={device} "
+              f"baseline={watcher.baseline_count if watcher else 0} events={list(watcher.log) if watcher else []}")
 
 
 if __name__ == "__main__":
