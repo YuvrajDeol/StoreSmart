@@ -28,6 +28,16 @@ Keys: `q` quit, `v` toggle blurred / raw people boxes, `l` redraw the entry line
 **Shelf watch:** put items (bottle, cup, banana, phone, book...) in view. After ~2 s of stable detections the baseline is set automatically (or press `b`). Green box = present, red "TAKEN" box = removed from its baseline spot. Matching is same class + centroid within ~12% of frame width. Debounced both ways (5 frames to report TAKEN, 5 to report returned) so one dropped YOLO detection never fires an alert. Recent events are shown in the corner. First camera use: allow Camera access for your Terminal in macOS
 Privacy settings.
 
+## Pipeline explainer (gamified)
+
+    .venv/bin/python -m edge_lab.explain                       # webcam
+    .venv/bin/python -m edge_lab.explain --simulate --headless --duration 8   # scripted run + per-stage summary
+
+One window walks six stages: INPUT, PREPROCESS (real letterbox), CANDIDATES, CONFIDENCE, NMS, RESULT (with the metrics HUD).
+Keys: `n`/`p` next/previous, `r` restart, `q` quit, `+`/`-` threshold (stage 4), `1`-`9` answer, `s` skip a question, `v` blur people.
+Stages 3-5 pose a quiz question (exact = 100, within 1 = 50); end card scores out of 300. Flags: `--source --simulate --imgsz --conf --device --headless --duration`.
+Stage 3 is labelled *minimally filtered output* (conf 0.01, NMS iou 0.95), not the raw detection-head tensor. Stage 2 draws the full square letterbox; PyTorch's single-image path trims the padding to a multiple of 32. Frames stay in memory; nothing is saved.
+
 ## Metrics HUD
 
 - **Model / Device / Input size** - weights, `mps` or `cpu`, and YOLO `imgsz`.
